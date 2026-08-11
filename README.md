@@ -1,33 +1,33 @@
-# Hi, I'm Hemanth Kalyan Kumar Reddy Talapureddy
+# Hemanth Kalyan Kumar Reddy Talapureedy
 
-MSc candidate in Geology & Geophysics at Missouri University of Science and Technology, graduating December 2026.
+M.S. thesis student in Geology & Geophysics at Missouri University of Science and Technology, working on lake sediment records of past floods and earthquakes.
 
-## About Me
-- Specializing in sedimentology, limnologeology, paleoclimatology, limnology, and petroleum geology
-- Interested in Oil & Gas, Mining, and Environmental Geoscience
-- Open to graduate roles, internships, contract, and full-time opportunities
-- International student seeking opportunities before graduation
+## Research
 
-## Technical Interests
-- Basin analysis
-- Sedimentary environments
-- Petroleum systems
-- Geoscience data analysis
-- GIS and subsurface interpretation
+My thesis uses grain-size analysis of sediment cores from **Lake Lachuá, Guatemala** to distinguish flood-induced from earthquake-triggered turbidites — two event types that look similar in a core but mean very different things for hazard reconstruction in the tropics. Advised by Dr. Jonathan Obrist-Farner. Expected completion December 2026.
 
-## Tools & Skills
-- Python
-- GIS
-- Excel
-- Sedimentological analysis
-- Geological fieldwork
-- Scientific writing
+Working with the sediment record means most of my time goes to laser diffraction particle sizing, downcore statistical analysis, and the interpretive problem of turning distribution shapes into depositional processes.
 
-## Current Focus
-- Master’s thesis research
-- Building geoscience portfolio projects
-- Preparing for graduate geoscientist roles in 2026/2027
+## Interests
 
-## Contact
-- Email: hemanth.kkrt@gmail.com
-- LinkedIn: www.linkedin.com/in/hemanthkkr-talapureddy
+- Paleoseismology and paleoflood reconstruction
+- Lacustrine sedimentology and event stratigraphy
+- Grain-size statistics and end-member modeling
+- Tropical paleoclimate records
+
+## Tools
+
+**Lab:** Malvern Mastersizer 3000, Malvern Xplorer, core logging and description
+**Analysis:** Python (pandas, numpy, matplotlib, scipy), Excel
+**Spatial:** QGIS, ArcGIS, drone-based mapping
+**Subsurface:** Petrel
+
+## Repositories
+
+Code here is built around workflows I use in my own research. Where repositories involve unpublished core data, they run on synthetic or published example datasets — the methods are reproducible, the measurements stay with the lab until publication.
+
+## Elsewhere
+
+- LinkedIn: [linkedin.com/in/hemanth-kalyan-kumar-reddy](https://www.linkedin.com/in/hemanth-kalyan-kumar-reddy)
+- Email: hemanthkkrt.earth@gmail.com
+- Memberships: GSA, AIPG, C.L. Dake Geological Society
