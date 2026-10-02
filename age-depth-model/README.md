@@ -1,13 +1,23 @@
 # Varve age-depth model plot
 
-Plots varve-counted age-depth models for several sediment cores on one figure,
-in the same style as the Excel chart: age (yr CE) on a top axis, depth (cm)
-increasing downward, and one stepped line per core.
+Plots varve-counted age-depth models for several sediment cores as one
+three-panel figure with linked age, depth and varve-thickness scales:
+
+- **a** age-depth model: age (yr CE) vs depth (cm), one stepped line per core
+- **b** varve thickness (mm, log) vs depth, on the same depth axis as **a**
+- **c** varve thickness (mm, log) through time, one strip per core, on the same age axis as **a**
+
+Varve thickness is calculated from the depth of each varve top, so event
+layers (thick turbidites) stand out as spikes in **b** and **c**.
 
 ```bash
 pip install pandas numpy matplotlib openpyxl
-python plot_age_depth.py my_varve_counts.xlsx -o age_depth_model.png --xlim 1700 2050 --ylim 90 0
+python plot_age_depth.py my_varve_counts.xlsx -o age_depth_model.png --xlim 1700 2050 --ylim 90 0 --event-mm 10
 ```
+
+`--event-mm 10` draws a dashed 10 mm line on the thickness panels to help flag
+event layers (leave it out for no line). `--layout simple` draws only the
+age-depth curves, like the original Excel chart.
 
 Save as `.pdf` or `.svg` instead of `.png` for a vector figure. Use `--style line`
 to connect points directly instead of drawing steps.

@@ -39,10 +39,13 @@ import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, LogLocator
 import numpy as np
 import pandas as pd
 
 # Colours matched to the Excel chart (Office theme, in series order).
+PLAIN = FuncFormatter(lambda v, _: f"{v:g}")  # 0.1, 1, 10 instead of 10^-1
+
 CORE_COLORS = [
     "#156082",  # dark teal-blue
     "#E97132",  # orange
@@ -159,6 +162,125 @@ def plot_age_depth(cores, out_path, xlim=None, ylim=None, style="steps",
     return fig, ax
 
 
+def varve_thickness(df):
+    """Per-year varve thickness (mm) from the depth/year series of one core.
+
+    Rows sharing a year (e.g. top and base of an event layer) are merged, and
+    each year's thickness is the depth to the top of the next-older varve.
+    The oldest varve has no base, so it is dropped.
+    """
+    tops = df.groupby("year")["depth"].min().sort_index(ascending=False)
+    thick_mm = (tops.shift(-1) - tops) * 10.0
+    out = pd.DataFrame({"year": tops.index, "depth": tops.values,
+                        "thickness": thick_mm.values}).dropna()
+    return out[out["thickness"] > 0].reset_index(drop=True)
+
+
+def plot_age_depth_panel(cores, out_path, xlim=None, ylim=None, style="steps",
+                         title=None, xstep=50, ystep=10, event_mm=None):
+    """Three linked scales in one figure.
+
+    (a) age-depth curves; (b) varve thickness vs depth, sharing (a)'s depth
+    axis; (c) varve thickness vs age, one strip per core, sharing (a)'s age axis.
+    """
+    names = list(cores)
+    colors = {n: CORE_COLORS[i % len(CORE_COLORS)] for i, n in enumerate(names)}
+    thick = {n: varve_thickness(df) for n, df in cores.items()}
+    drawstyle = "steps-post" if style == "steps" else "default"
+
+    all_years = pd.concat([d["year"] for d in cores.values()])
+    all_depths = pd.concat([d["depth"] for d in cores.values()])
+    all_thick = pd.concat([t["thickness"] for t in thick.values()])
+    if xlim is None:
+        xlim = _nice_limits(all_years.min(), all_years.max(), xstep)
+    if ylim is None:
+        ylim = (_nice_limits(0, all_depths.max(), ystep)[1], 0)
+    tlim = (10 ** np.floor(np.log10(all_thick.min())),
+            10 ** np.ceil(np.log10(all_thick.max())))
+
+    n = len(names)
+    fig = plt.figure(figsize=(12, 8.5 + 0.45 * n))
+    outer = fig.add_gridspec(2, 2, width_ratios=[3.2, 1], height_ratios=[3, 0.16 * n + 0.4],
+                             wspace=0.1, hspace=0.08)
+    ax = fig.add_subplot(outer[0, 0])
+    axb = fig.add_subplot(outer[0, 1], sharey=ax)
+    strips = outer[1, 0].subgridspec(n, 1, hspace=0)
+    axc = [fig.add_subplot(strips[i], sharex=ax) for i in range(n)]
+
+    # (a) age-depth model
+    for name, df in cores.items():
+        ax.plot(df["year"], df["depth"], color=colors[name], lw=1.5,
+                drawstyle=drawstyle, label=name)
+    ax.set_xlim(xlim)
+    ax.set_ylim(max(ylim), min(ylim))
+    ax.set_xticks(np.arange(min(xlim), max(xlim) + xstep, xstep))
+    ax.set_yticks(np.arange(min(ylim), max(ylim) + ystep, ystep))
+    ax.xaxis.tick_top()
+    ax.xaxis.set_label_position("top")
+    ax.set_xlabel("Age (yr CE)", fontsize=12, labelpad=8)
+    ax.set_ylabel("Depth (cm)", fontsize=12)
+    ax.grid(color="0.9", lw=0.6)
+    ax.set_axisbelow(True)
+
+    # (b) varve thickness vs depth
+    for name, t in thick.items():
+        axb.plot(t["thickness"], t["depth"], color=colors[name], lw=0.8, alpha=0.85,
+                 drawstyle="steps-pre")
+    axb.set_xscale("log")
+    axb.set_xlim(tlim)
+    axb.xaxis.set_major_locator(LogLocator(base=10, numticks=10))
+    axb.xaxis.set_major_formatter(PLAIN)
+    axb.xaxis.tick_top()
+    axb.xaxis.set_label_position("top")
+    axb.set_xlabel("Varve thickness (mm)", fontsize=12, labelpad=8)
+    axb.tick_params(labelleft=False)
+    axb.grid(color="0.9", lw=0.6, which="major")
+    axb.set_axisbelow(True)
+
+    # (c) varve thickness vs age, one strip per core
+    for a, name in zip(axc, names):
+        t = thick[name]
+        a.fill_between(t["year"], tlim[0], t["thickness"], step="post",
+                       color=colors[name], alpha=0.25, lw=0)
+        a.plot(t["year"], t["thickness"], color=colors[name], lw=0.8, drawstyle="steps-post")
+        a.set_yscale("log")
+        a.set_ylim(tlim)
+        a.set_yticks([v for v in (1, 10, 100) if tlim[0] < v < tlim[1]])
+        a.yaxis.set_major_formatter(PLAIN)
+        a.minorticks_off()
+        a.tick_params(axis="y", labelsize=7, length=2, pad=1)
+        a.text(1.005, 0.5, name, transform=a.transAxes, va="center", fontsize=9,
+               color=colors[name])
+        a.grid(axis="x", color="0.9", lw=0.6)
+        a.set_axisbelow(True)
+        if a is not axc[-1]:
+            a.tick_params(labelbottom=False, bottom=False)
+    axc[-1].set_xlabel("Age (yr CE)", fontsize=12)
+    axc[n // 2].set_ylabel("Varve\nthickness\n(mm, log)", fontsize=10,
+                           rotation=0, ha="right", va="center", labelpad=10)
+
+    if event_mm:
+        axb.axvline(event_mm, color="0.35", ls="--", lw=0.9)
+        axb.text(event_mm, max(ylim), f" {event_mm:g} mm", fontsize=8, color="0.35",
+                 va="bottom", rotation=90)
+        for a in axc:
+            a.axhline(event_mm, color="0.35", ls="--", lw=0.7)
+
+    for a, label in ((ax, "a"), (axb, "b"), (axc[0], "c")):
+        a.text(0.012, 0.985 if a is not axc[0] else 0.92, label, transform=a.transAxes,
+               fontsize=13, fontweight="bold", va="top", zorder=5,
+               bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
+
+    ax.legend(loc="lower right", frameon=True, framealpha=0.9, edgecolor="0.8",
+              fontsize=9, ncol=2, title="Core", title_fontsize=9)
+    if title:
+        fig.suptitle(title, fontsize=14)
+
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    print(f"Saved {out_path}")
+    return fig
+
+
 def main():
     p = argparse.ArgumentParser(description="Plot a varve-counted age-depth model from Excel.")
     p.add_argument("excel", help="Varve counting workbook (.xlsx)")
@@ -173,14 +295,23 @@ def main():
     p.add_argument("--top-year", type=int,
                    help="Year of the topmost varve (only needed for thickness-only sheets)")
     p.add_argument("--title", help="Optional figure title")
+    p.add_argument("--layout", choices=["panel", "simple"], default="panel",
+                   help="'panel' (default): age-depth + varve thickness vs depth and vs age; "
+                        "'simple': age-depth curves only")
+    p.add_argument("--event-mm", type=float,
+                   help="Draw a varve-thickness threshold (mm), e.g. to flag event layers")
     args = p.parse_args()
 
     cores = read_cores(args.excel, top_year=args.top_year)
     for name, df in cores.items():
         print(f"  {name}: {len(df)} points, {df['depth'].max():.1f} cm, "
               f"{df['year'].min():.0f}-{df['year'].max():.0f} CE")
-    plot_age_depth(cores, Path(args.out), xlim=args.xlim, ylim=args.ylim,
-                   style=args.style, title=args.title)
+    if args.layout == "panel":
+        plot_age_depth_panel(cores, Path(args.out), xlim=args.xlim, ylim=args.ylim,
+                             style=args.style, title=args.title, event_mm=args.event_mm)
+    else:
+        plot_age_depth(cores, Path(args.out), xlim=args.xlim, ylim=args.ylim,
+                       style=args.style, title=args.title)
 
 
 if __name__ == "__main__":
