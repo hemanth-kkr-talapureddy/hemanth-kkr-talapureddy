@@ -84,16 +84,23 @@ age-depth figure**, so E1, E2, … match between the two figures.
 ## Run in Google Colab
 
 Open `core_photos_colab.ipynb` in Colab and run the cells in order. It asks for
-the photos, the event depth file, and the depth at the top and bottom edge of
-each photo.
+the photos and the event depth file, then works out the depth at the top and
+bottom edge of each photo and shows where each value came from:
+
+1. a value you typed (`PHOTO_BOTTOM_CM`, or `PX_PER_CM`) always wins;
+2. otherwise the photo's stored resolution (DPI), which core scanners save, gives
+   the true scale;
+3. otherwise the photo is stretched to the deepest counted depth of that core in
+   the varve workbook. This is marked **APPROXIMATE** - check it.
 
 ## Inputs
 
 - **Photos** (JPG, PNG, TIFF), cropped to the core. The file name must contain
   the core ID (`GUAC-22A-1G-1.jpg`, `guac_22a_1g_1.tif`, …). Sideways photos are
   turned upright (core top assumed on the left unless you set `Top side`).
-- **Photo depths**: table with `Core`, `Top (cm)`, `Bottom (cm)` (or `Px per cm`
-  instead of the bottom), optional `File` and `Top side`.
+- **Photo depths** (optional): table with `Core`, `Top (cm)`, `Bottom (cm)` (or
+  `Px per cm` instead of the bottom), optional `File` and `Top side`. Without it,
+  the photo DPI or the varve counts are used as above.
 - **Event depths**: the varve workbook's **Events** sheet (uses the
   `Depth (in core)` column by default, to match the photos), or a table with
   `Core`, `Event`, `Top (cm)`, `Base (cm)`.
@@ -102,6 +109,8 @@ Depths for photos and events must use the same reference (e.g. both measured
 from the top of the core liner).
 
 ```bash
+python plot_core_photos.py --photos photos/*.jpg --events Lachua_Varve_counts.xlsx \
+    -o core_photos_events.pdf                       # photo depths worked out automatically
 python plot_core_photos.py --photos photos/*.jpg --photo-depths photo_depths.csv \
     --events Lachua_Varve_counts.xlsx -o core_photos_events.pdf
 ```

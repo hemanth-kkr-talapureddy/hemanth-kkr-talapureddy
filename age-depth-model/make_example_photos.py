@@ -14,7 +14,7 @@ from PIL import Image
 
 from plot_age_depth import read_cores, split_varves_events
 
-PX_PER_CM = 40
+PX_PER_CM = 50  # = 127 DPI, a whole number as stored in JPEG files
 WIDTH_CM = 6.5
 rng = np.random.default_rng(7)
 out = Path("example_photos")
@@ -39,7 +39,7 @@ for name, df in cores.items():
     photo = Image.fromarray(np.clip(img * 255, 0, 255).astype(np.uint8))
     if name == "CORE-03":
         photo = photo.rotate(90, expand=True)  # core top now on the left
-    photo.save(out / f"{name}.jpg", quality=90)
+    photo.save(out / f"{name}.jpg", quality=90, dpi=(PX_PER_CM * 2.54,) * 2)
     rows.append({"Core": name, "Top (cm)": top_cm, "Bottom (cm)": bottom_cm})
 
 pd.DataFrame(rows).to_csv("example_photo_depths.csv", index=False)

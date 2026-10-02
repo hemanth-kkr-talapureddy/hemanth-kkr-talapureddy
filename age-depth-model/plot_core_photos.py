@@ -42,7 +42,7 @@ import pandas as pd
 from matplotlib.patches import Polygon, Rectangle
 from PIL import Image
 
-from plot_age_depth import EVENT_COLORS, read_events
+from plot_age_depth import EVENT_COLORS, read_cores, read_events
 
 Image.MAX_IMAGE_PIXELS = None  # core scans can be very large
 MAX_PIXELS_LONG_SIDE = 4000  # photos are downsampled to this for plotting
@@ -133,6 +133,17 @@ def read_event_depths(source, depth_col="in core"):
     return [{"name": n, "cores": c} for n, c in events.items()]
 
 
+def counts_bottoms(source, depth_col="in core"):
+    """{core: deepest counted depth} from the varve workbook, or {} if unavailable."""
+    try:
+        import contextlib, io as _io
+        with contextlib.redirect_stdout(_io.StringIO()):
+            cores = read_cores(source, depth_col=depth_col)
+        return {c: float(df["depth"].max()) for c, df in cores.items()}
+    except Exception:
+        return {}
+
+
 def load_photo(path, top_side=None):
     """Open a photo and turn it so the core top is at the top edge."""
     img = Image.open(path)
@@ -146,6 +157,72 @@ def load_photo(path, top_side=None):
     if scale < 1:
         img = img.resize((round(img.size[0] * scale), round(img.size[1] * scale)), Image.LANCZOS)
     return img, (h if side in ("top", "bottom") else w)  # original length in pixels
+
+
+def photo_px_per_cm(path):
+    """Pixels per cm from the photo's stored resolution (DPI), or None.
+
+    Core scanners save their true resolution; 72 or 96 DPI is a screen default
+    that says nothing about the real scale, so it is ignored.
+    """
+    try:
+        dpi = Image.open(path).info.get("dpi")
+    except Exception:
+        return None
+    if not dpi:
+        return None
+    d = float(dpi[1] if len(dpi) > 1 else dpi[0])
+    return d / 2.54 if d > 100 else None
+
+
+def photo_length_px(path, top_side=None):
+    """Length of the core in the photo, in pixels (along the core axis)."""
+    w, h = Image.open(path).size
+    side = top_side or ("left" if w > h else "top")
+    return h if side in ("top", "bottom") else w
+
+
+def resolve_photo_depths(cores, photos, photo_depths=None, bottoms=None, counts_bottom=None):
+    """Fill in the depth (cm) at the top and bottom edge of every photo.
+
+    For each core, in order of preference:
+      1. `bottoms[core]` or a Bottom (cm) given in `photo_depths` (your value),
+      2. Px per cm given in `photo_depths`,
+      3. the photo's stored resolution (DPI),
+      4. `counts_bottom[core]`: deepest counted depth of that core (approximate:
+         stretches the photo to the varve counts; check it).
+    Returns (photo_depths dict for plot_core_photos, summary DataFrame).
+    """
+    photo_depths = {c: dict(v) for c, v in (photo_depths or {}).items()}
+    bottoms, counts_bottom = bottoms or {}, counts_bottom or {}
+    rows = []
+    for core in cores:
+        spec = photo_depths.setdefault(core, {"top": 0.0, "bottom": None, "px_per_cm": None,
+                                              "file": None, "top_side": None})
+        top = spec.get("top") or 0.0
+        path = photos.get(core) or spec.get("file")
+        has_photo = bool(path) and Path(path).exists()
+        length = photo_length_px(path, spec.get("top_side")) if has_photo else None
+        source = ""
+        if bottoms.get(core) is not None:
+            spec["bottom"], source = float(bottoms[core]), "your value"
+        elif spec.get("bottom") is not None:
+            source = "your value"
+        elif spec.get("px_per_cm") and length:
+            spec["bottom"], source = top + length / spec["px_per_cm"], "your px per cm"
+        elif has_photo and photo_px_per_cm(path):
+            spec["px_per_cm"] = photo_px_per_cm(path)
+            spec["bottom"], source = top + length / spec["px_per_cm"], "photo DPI"
+        elif counts_bottom.get(core) is not None:
+            spec["bottom"] = float(counts_bottom[core])
+            source = "deepest counted depth (APPROXIMATE - check)"
+        else:
+            source = "MISSING - enter Bottom (cm)"
+        spec["top"] = top
+        rows.append({"Core": core, "Photo": Path(path).name if has_photo else "-",
+                     "Top (cm)": top, "Bottom (cm)": None if spec["bottom"] is None
+                     else round(spec["bottom"], 2), "From": source})
+    return photo_depths, pd.DataFrame(rows)
 
 
 def match_photos(files, cores):
@@ -190,8 +267,11 @@ def plot_core_photos(photos, photo_depths, events, out_path, cores=None, ylim=No
             img, length_px = load_photo(path, spec.get("top_side"))
             if bottom is None and spec.get("px_per_cm"):
                 bottom = top + length_px / spec["px_per_cm"]
+            if bottom is None and photo_px_per_cm(path):
+                bottom = top + length_px / photo_px_per_cm(path)
             if bottom is None:
-                raise ValueError(f"{core}: give the photo's Bottom (cm) or Px per cm.")
+                raise ValueError(f"{core}: give the photo's Bottom (cm) or Px per cm "
+                                 "(see resolve_photo_depths).")
             width = (bottom - top) * img.size[0] / img.size[1]  # same cm per pixel both ways
         else:
             if path:
@@ -283,8 +363,9 @@ def plot_core_photos(photos, photo_depths, events, out_path, cores=None, ylim=No
 def main():
     p = argparse.ArgumentParser(description="Core photos with event layers at true scale.")
     p.add_argument("--photos", nargs="+", default=[], help="Core photo files")
-    p.add_argument("--photo-depths", required=True,
-                   help="CSV/Excel with Core, Top (cm), Bottom (cm) [, File, Px per cm, Top side]")
+    p.add_argument("--photo-depths",
+                   help="CSV/Excel with Core, Top (cm), Bottom (cm) [, File, Px per cm, Top side]. "
+                        "Optional: without it, the photo DPI or the varve counts are used")
     p.add_argument("--events", required=True,
                    help="Event depths: workbook with an 'Events' sheet, or CSV/Excel with "
                         "Core, Event, Top (cm), Base (cm)")
@@ -296,13 +377,17 @@ def main():
     p.add_argument("-o", "--out", default="core_photos_events.png")
     args = p.parse_args()
 
-    depths = read_photo_depths(args.photo_depths)
+    depths = read_photo_depths(args.photo_depths) if args.photo_depths else {}
     events = read_event_depths(args.events, depth_col=args.depth_col)
-    cores = args.cores or list(depths)
+    cores = args.cores or list(depths) or list(dict.fromkeys(
+        c for e in events for c in e["cores"]))
     photos = match_photos(args.photos, cores)
     for spec_core, spec in depths.items():  # a File column overrides name matching
         if spec.get("file"):
             photos[spec_core] = spec["file"]
+    depths, summary = resolve_photo_depths(cores, photos, depths,
+                                           counts_bottom=counts_bottoms(args.events, args.depth_col))
+    print(summary.to_string(index=False))
     print(f"{len(photos)} photos matched; {len(events)} events.")
     plot_core_photos(photos, depths, events, Path(args.out), cores=cores, ylim=args.ylim,
                      title=args.title)
