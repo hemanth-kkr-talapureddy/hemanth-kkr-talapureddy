@@ -5,11 +5,14 @@ Reads varve counts for one or more cores from an Excel workbook and draws a
 figure with linked scales:
 
   (a) age-depth model: age (yr CE) vs depth (cm), one line per core. Every
-      event layer is drawn as a thick bar on its core's curve; events that are
-      correlated between cores (from an "Events" sheet) are joined by a dashed
-      tie line and labelled E1, E2, ..., and a table beside the plot gives each
-      event's age and depth range across the cores
-  (b) thickness through time: one strip per core, on the same age axis as (a)
+      event layer is drawn as a thick bar on its core's curve. Each event that
+      is correlated between cores (from an "Events" sheet) is shaded in the
+      background as its age-depth uncertainty envelope: the outline around that
+      layer in every core, touching each core's event top and base. Envelopes
+      are labelled E1, E2, ..., and a table beside the plot gives each event's
+      age and depth range across the cores
+  (b) thickness through time: one strip per core, on the same age axis as (a),
+      with each event's age range shaded in the same colour
 
 Event layers are found from the counts themselves: when the same year is
 listed on consecutive rows with increasing depth, the depth between them is
@@ -56,6 +59,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Polygon
 from matplotlib.ticker import FuncFormatter
 
 PLAIN = FuncFormatter(lambda v, _: f"{v:g}")  # 0.1, 1, 10 instead of 10^-1
@@ -73,6 +77,10 @@ CORE_COLORS = [
     "#5E5E5E",  # grey (extra cores)
     "#C9A100",  # mustard
 ]
+
+# Soft background shades for correlated events (cycled; neighbours always differ).
+EVENT_COLORS = ["#F4A261", "#2A9D8F", "#E9C46A", "#6D8EAD", "#E76F51", "#8AB17D",
+                "#B5838D", "#9C89B8"]
 
 YEAR_RE = re.compile(r"year|\bage\b|\bce\b|\bad\b", re.I)
 DEPTH_RE = re.compile(r"depth", re.I)
@@ -244,6 +252,31 @@ def read_events(source, depth_col="adjusted", sheet=None):
     return []
 
 
+def event_envelope(event):
+    """Polygon (list of (age, depth)) enclosing one correlated event in every core.
+
+    Each core's layer is the rectangle [year - 0.5, year + 0.5] x [top, base]
+    (a layer fills its whole varve year); the envelope is the convex hull of
+    those corners, so it touches every core's event top and base exactly.
+    """
+    pts = sorted({(y + dx, d) for y, t, b in event["cores"].values()
+                  for dx in (-0.5, 0.5) for d in (t, b)})
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower, upper = [], []
+    for p in pts:  # Andrew's monotone chain
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    return lower[:-1] + upper[:-1]
+
+
 # ----------------------------------------------------------------------------
 # Plotting
 # ----------------------------------------------------------------------------
@@ -308,19 +341,24 @@ def _event_table(ax, events, cores):
     table.auto_set_font_size(False)
     table.set_fontsize(8)
     table.scale(1, 0.85)
-    for (r, _), cell in table.get_celld().items():
+    for (r, c), cell in table.get_celld().items():
         cell.set_edgecolor("0.8")
         cell.set_linewidth(0.5)
         if r == 0:
             cell.set_text_props(fontweight="bold")
             cell.set_facecolor("0.93")
             cell.set_height(cell.get_height() * 1.8)
+        elif c == 0:  # event name in that event's shade, as in the plot
+            cell.set_facecolor(EVENT_COLORS[(r - 1) % len(EVENT_COLORS)])
+            cell.set_alpha(0.45)
+            cell.set_text_props(fontweight="bold")
 
 
 def plot_age_depth_panel(cores, out_path, events=None, xlim=None, ylim=None, style="line",
                          title=None, xstep=50, ystep=10, event_mm=None):
-    """(a) age-depth curves with event layers and event tie lines, plus a table
-    of event ages and depths; (b) thickness through time, one strip per core."""
+    """(a) age-depth curves with event layers and shaded event uncertainty
+    envelopes, plus a table of event ages and depths; (b) thickness through time,
+    one strip per core, with each event's age range shaded."""
     names = list(cores)
     events = events or []
     colors = {n: CORE_COLORS[i % len(CORE_COLORS)] for i, n in enumerate(names)}
@@ -347,22 +385,26 @@ def plot_age_depth_panel(cores, out_path, events=None, xlim=None, ylim=None, sty
                   alpha=0.45, zorder=2)
     _style_age_depth(ax, xlim, ylim, xstep, ystep)
 
-    # correlated events: dashed tie line through the middle of the layer in each
-    # core, joined from the shallowest to the deepest core, labelled at the deepest
+    # correlated events: shaded age-depth uncertainty envelope behind the curves.
+    # Each envelope is the outline around the event layer in every core, so its
+    # corners sit exactly on each core's event top and base (age, depth).
     placed = []
-    for ev in events:
-        pts = sorted(((t + b) / 2, y) for y, t, b in ev["cores"].values())
-        ys, xs = zip(*pts)
-        ax.plot(xs, ys, color="0.15", ls=(0, (4, 2)), lw=0.9, zorder=4)
-        ax.plot(xs, ys, "o", ms=2.5, color="0.15", zorder=4)
-        lx, ly = xs[-1] + 2, ys[-1]  # just right of the deepest point
-        while any(abs(lx - px) < 8 and abs(ly - py) < 1.6 for px, py in placed):
-            ly += 1.6  # nudge down past a label already placed here
+    for k, ev in enumerate(events):
+        color = EVENT_COLORS[k % len(EVENT_COLORS)]
+        hull = event_envelope(ev)
+        ax.add_patch(Polygon(hull, closed=True, facecolor=color, alpha=0.28,
+                             edgecolor=color, lw=0.8, zorder=1))
+        # label just right of the envelope's deepest corner, nudged if crowded
+        x0, y0 = max(hull, key=lambda p: (p[1], p[0]))
+        lx, ly = x0 + 2, y0
+        while any(abs(lx - px) < 13 and abs(ly - py) < 1.6 for px, py in placed):
+            ly += 1.6
         placed.append((lx, ly))
-        if ly != ys[-1]:  # leader line from a nudged label back to its point
-            ax.plot([xs[-1], lx], [ys[-1], ly], color="0.4", lw=0.5, zorder=4)
-        ax.text(lx, ly, ev["name"], fontsize=8, fontweight="bold", color="0.15", va="center", zorder=5,
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=0.5))
+        if ly != y0:  # leader line from a nudged label back to its envelope
+            ax.plot([x0, lx], [y0, ly], color="0.4", lw=0.5, zorder=4)
+        ax.text(lx, ly, ev["name"], fontsize=8, fontweight="bold", color="0.15",
+                va="center", zorder=5, clip_on=True,
+                bbox=dict(facecolor=color, edgecolor="none", alpha=0.45, pad=0.6))
 
     tax = None
     if events:
@@ -372,6 +414,10 @@ def plot_age_depth_panel(cores, out_path, events=None, xlim=None, ylim=None, sty
     # (b) thickness through time, one strip per core
     for a, name in zip(axs, names):
         var, evt = parts[name]
+        for k, ev in enumerate(events):  # event age range, same shade as panel a
+            yrs = [v[0] for v in ev["cores"].values()]
+            a.axvspan(min(yrs) - 0.5, max(yrs) + 0.5, color=EVENT_COLORS[k % len(EVENT_COLORS)],
+                      alpha=0.28, lw=0, zorder=0)
         a.fill_between(var["year"], tlim[0], var["thickness"], step="mid",
                        color=colors[name], alpha=0.25, lw=0)
         a.plot(var["year"], var["thickness"], color=colors[name], lw=0.7, drawstyle="steps-mid")
@@ -404,8 +450,8 @@ def plot_age_depth_panel(cores, out_path, events=None, xlim=None, ylim=None, sty
     handles = ax.get_legend_handles_labels()[0] + [
         Line2D([], [], color="0.5", lw=4.5, alpha=0.45, label="Event layer")]
     if events:
-        handles.append(Line2D([], [], color="0.15", ls=(0, (4, 2)), lw=0.9, marker="o", ms=2.5,
-                              label="Correlated event"))
+        handles.append(Patch(facecolor=EVENT_COLORS[0], edgecolor=EVENT_COLORS[0], alpha=0.4,
+                             label="Event age–depth\nuncertainty"))
     if tax is not None:  # below the event table, clear of the curves and labels
         tax.legend(handles=handles, loc="lower center", frameon=True, edgecolor="0.8",
                    fontsize=8, ncol=1, title="Core", title_fontsize=8.5)

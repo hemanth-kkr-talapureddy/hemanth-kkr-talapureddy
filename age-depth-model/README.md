@@ -4,12 +4,17 @@ Plots varve-counted age-depth models for several sediment cores as one figure
 with linked age and depth scales:
 
 - **a** age-depth model: age (yr CE) vs depth (cm), one line per core. Every
-  event layer is drawn as a thick bar on its core's curve. Events correlated
-  between cores (from an **Events** sheet) are joined by a dashed line through
-  each core and labelled E1, E2, …, and a table beside the plot gives each
-  event's age range, depth range and the number of cores it appears in.
+  event layer is drawn as a thick bar on its core's curve. Each event correlated
+  between cores (from an **Events** sheet) is shaded in the background as its
+  **age-depth uncertainty envelope**: the outline around that layer in every
+  core (each layer spanning its varve year, ±0.5 yr), so the envelope touches
+  each core's event top and base exactly. Its width is the age spread between
+  cores and its height the depth spread. Envelopes are labelled E1, E2, …, and a
+  table beside the plot gives each event's age range, depth range and number of
+  cores (event names coloured as in the plot).
 - **b** thickness (mm, log) through time, one strip per core, on the same age
-  axis as **a**, with event layers as markers
+  axis as **a**, with event layers as markers and each event's age range shaded
+  in the same colour as in **a**
 
 Event layers are read from the counts: when the same year is listed on
 consecutive rows with increasing depth, that depth interval is an
