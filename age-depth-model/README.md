@@ -5,11 +5,11 @@ with linked age and depth scales:
 
 - **a** age-depth model: age (yr CE) vs depth (cm), one line per core. Every
   event layer is drawn as a thick bar on its core's curve. Each event correlated
-  between cores (from an **Events** sheet) is shaded in the background as its
-  **age-depth uncertainty envelope**: the outline around that layer in every
-  core (each layer spanning its varve year, ±0.5 yr), so the envelope touches
-  each core's event top and base exactly. Its width is the age spread between
-  cores and its height the depth spread. Envelopes are labelled E1, E2, …, and a
+  between cores (from an **Events** sheet) is shaded as a **coloured column
+  hanging from the age axis**: as wide as the event's age range across the
+  cores (each layer spanning its varve year, ±0.5 yr), marked by a coloured bar
+  on the age scale, with its lower edge running through each core's event base.
+  So the column matches both the age and the depth scale. Columns are labelled E1, E2, …, and a
   table beside the plot gives each event's age range, depth range and number of
   cores (event names coloured as in the plot).
 - **b** thickness (mm, log) through time, one strip per core, on the same age
