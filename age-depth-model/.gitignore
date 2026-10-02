@@ -1,2 +1,4 @@
 *.xlsx
 __pycache__/
+example_photos/
+example_photo_depths.csv

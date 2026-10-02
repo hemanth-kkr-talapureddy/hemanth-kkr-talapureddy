@@ -68,3 +68,47 @@ layout, with an Events sheet, so you can try the script without real core data. 
 is the result.
 
 ![example](example_age_depth.png)
+
+---
+
+# Core photos with event layers (true scale)
+
+`plot_core_photos.py` places the core photos side by side on one depth axis (cm),
+each at its real proportions (its width in cm comes from the same cm-per-pixel
+scale as its length, and the plot uses equal x and y scales). Every event layer
+is drawn on the photos at its depth, with a coloured bar beside the core, and a
+shaded band links the same event between neighbouring cores (a band that skips a
+core without that event runs behind it). **Event colours are the same as in the
+age-depth figure**, so E1, E2, … match between the two figures.
+
+## Run in Google Colab
+
+Open `core_photos_colab.ipynb` in Colab and run the cells in order. It asks for
+the photos, the event depth file, and the depth at the top and bottom edge of
+each photo.
+
+## Inputs
+
+- **Photos** (JPG, PNG, TIFF), cropped to the core. The file name must contain
+  the core ID (`GUAC-22A-1G-1.jpg`, `guac_22a_1g_1.tif`, …). Sideways photos are
+  turned upright (core top assumed on the left unless you set `Top side`).
+- **Photo depths**: table with `Core`, `Top (cm)`, `Bottom (cm)` (or `Px per cm`
+  instead of the bottom), optional `File` and `Top side`.
+- **Event depths**: the varve workbook's **Events** sheet (uses the
+  `Depth (in core)` column by default, to match the photos), or a table with
+  `Core`, `Event`, `Top (cm)`, `Base (cm)`.
+
+Depths for photos and events must use the same reference (e.g. both measured
+from the top of the core liner).
+
+```bash
+python plot_core_photos.py --photos photos/*.jpg --photo-depths photo_depths.csv \
+    --events Lachua_Varve_counts.xlsx -o core_photos_events.pdf
+```
+
+## Example
+
+`make_example_photos.py` draws **synthetic** core photos from the synthetic
+workbook (one saved sideways). `example_core_photos.png` is the result.
+
+![example core photos](example_core_photos.png)
