@@ -29,8 +29,9 @@ Depth scale of each photo (first available wins)
 3. Px per cm (or stored DPI) plus Top (cm), the depth at the photo's top edge
    (default 0).
 4. Top (cm) and Bottom (cm): the depths at the photo's top and bottom edges.
-5. Last resort, APPROXIMATE: the photo is stretched from 0 to the deepest
-   counted depth of that core in the varve workbook.
+There is deliberately no fallback: a photo without one of these is refused,
+because guessing its scale (e.g. stretching it to the counted depths) puts the
+sediment, and so every event, at the wrong depth.
 
 Inputs
 ------
@@ -54,7 +55,6 @@ Usage
 """
 
 import argparse
-import contextlib
 import io
 import re
 from pathlib import Path
@@ -65,7 +65,7 @@ import pandas as pd
 from matplotlib.patches import Polygon, Rectangle
 from PIL import Image
 
-from plot_age_depth import EVENT_COLORS, read_cores, read_events
+from plot_age_depth import EVENT_COLORS, _event_table, read_cores, read_events
 
 Image.MAX_IMAGE_PIXELS = None  # core scans can be very large
 MAX_PIXELS_LONG_SIDE = 6000  # only for drawing; the depth scale uses the full-size photo
@@ -165,16 +165,6 @@ def read_event_depths(source, depth_col="in core"):
     return [{"name": n, "cores": c} for n, c in events.items()]
 
 
-def counts_bottoms(source, depth_col="in core"):
-    """{core: deepest counted depth} from the varve workbook, or {} if unavailable."""
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            cores = read_cores(source, depth_col=depth_col)
-        return {c: float(df["depth"].max()) for c, df in cores.items()}
-    except Exception:
-        return {}
-
-
 def match_photos(files, cores):
     """{core: file} by finding each core ID inside the file names."""
     out = {}
@@ -224,7 +214,7 @@ def photo_px_per_cm(path):
     return d / 2.54 if d > 100 else None
 
 
-def photo_scale(path, spec, counts_bottom=None):
+def photo_scale(path, spec):
     """Linear depth scale of one photo: (depth at top edge, px per cm, source).
 
     `spec` holds any of ref1_px/ref1_cm/ref2_px/ref2_cm, px_per_cm, top,
@@ -256,20 +246,17 @@ def photo_scale(path, spec, counts_bottom=None):
         return top, length / (g("bottom") - top), "top + bottom depths"
     if ppc_dpi:
         return top, ppc_dpi, "photo DPI + top depth"
-    if counts_bottom:
-        return 0.0, length / counts_bottom, "deepest counted depth (APPROXIMATE - check)"
-    raise ValueError(f"{Path(path).name}: no depth scale. Give two ruler readings "
-                     "(Ref1/Ref2 px and cm), or Px per cm, or Top and Bottom (cm).")
+    return None, None, "NO DEPTH SCALE - add two ruler readings"
 
 
-def resolve_photo_depths(cores, photos, photo_depths=None, counts_bottom=None):
+def resolve_photo_depths(cores, photos, photo_depths=None):
     """Depth scale for every core's photo.
 
     Returns ({core: {"file", "top_side", "top", "px_per_cm", "bottom"}},
     summary DataFrame showing where each scale came from).
     """
-    photo_depths, counts_bottom = photo_depths or {}, counts_bottom or {}
-    scales, rows = {}, []
+    photo_depths = photo_depths or {}
+    scales, rows, missing = {}, [], []
     for core in cores:
         spec = {k: None for k in SPEC_KEYS}
         spec.update(photo_depths.get(core, {}))
@@ -278,14 +265,26 @@ def resolve_photo_depths(cores, photos, photo_depths=None, counts_bottom=None):
             rows.append({"Core": core, "Photo": "-", "Px per cm": None, "Top edge (cm)": None,
                          "Bottom edge (cm)": None, "Depth scale from": "no photo (blank column)"})
             continue
-        top, ppc, source = photo_scale(path, spec, counts_bottom.get(core))
+        top, ppc, source = photo_scale(path, spec)
         _, _, side, length, _ = photo_geometry(path, spec.get("top_side"))
+        if ppc is None:
+            missing.append(core)
+            rows.append({"Core": core, "Photo": Path(path).name, "Px per cm": None,
+                         "Top edge (cm)": None, "Bottom edge (cm)": None,
+                         "Depth scale from": source})
+            continue
         scales[core] = {"file": path, "top_side": side, "top": top, "px_per_cm": ppc,
                         "bottom": top + length / ppc}
         rows.append({"Core": core, "Photo": Path(path).name, "Px per cm": round(ppc, 3),
                      "Top edge (cm)": round(top, 2), "Bottom edge (cm)": round(top + length / ppc, 2),
                      "Depth scale from": source})
-    return scales, pd.DataFrame(rows)
+    summary = pd.DataFrame(rows)
+    if missing:
+        raise ValueError(
+            "No depth scale for: " + ", ".join(missing) + ".\nEnter two ruler readings "
+            "(depth in cm and pixel position of two marks on the photo's ruler) for each, "
+            "or Px per cm with Top (cm), or Top and Bottom (cm).\n" + summary.to_string(index=False))
+    return scales, summary
 
 
 def load_upright(path, side):
@@ -382,8 +381,8 @@ def _auto_ylim(columns, ystep):
 
 
 def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0,
-                     default_width_cm=7.0, ystep=5, fill_alpha=0.22, link_alpha=0.35,
-                     height_in=12, title=None):
+                     default_width_cm=7.0, ystep=5, fill_alpha=0.18, link_alpha=0.35,
+                     height_in=12, title=None, table=True):
     """Full photos side by side at true scale with the event layers.
 
     scales: from resolve_photo_depths(); events: from read_event_depths().
@@ -411,7 +410,7 @@ def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0
             ax.add_patch(Rectangle((col["x0"], t), col["x1"] - col["x0"], b - t,
                                    facecolor=color, alpha=fill_alpha, edgecolor="none", zorder=2))
             for d in (t, b):  # event top and base lines across the photo
-                ax.plot([col["x0"], col["x1"]], [d, d], color=color, lw=0.9, zorder=3)
+                ax.plot([col["x0"], col["x1"]], [d, d], color=color, lw=1.4, zorder=3)
             ax.add_patch(Rectangle((col["x1"], t), bar_w, b - t, facecolor=color,
                                    edgecolor="none", zorder=3))
         # band linking the event to the next core that has it; a band that skips
@@ -434,12 +433,17 @@ def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0
                 ax.plot([col["x1"] + bar_w, lx], [(t + b) / 2, ly], color="0.4", lw=0.5, zorder=4)
             ax.text(lx, ly, ev["name"], fontsize=7.5, fontweight="bold", va="center",
                     color="0.15", zorder=5, clip_on=False,
-                    bbox=dict(facecolor=color, edgecolor="none", alpha=0.6, pad=0.6))
+                    bbox=dict(facecolor=color, edgecolor="none", alpha=0.45, pad=0.6))
 
     ax.set_xlim(-1.5, total_w + 5)
     _depth_axis(ax, ylim, ystep)
     ax.grid(axis="y", color="0.88", lw=0.5)
     ax.set_axisbelow(True)
+    if table and events:  # same event table and colours as the age-depth figure
+        fig.canvas.draw()
+        pos = ax.get_position()
+        tax = fig.add_axes([pos.x1 + 0.01, pos.y0 + 0.35 * pos.height, 0.22, 0.65 * pos.height])
+        _event_table(tax, events, cores, depth_label="Depth in\ncore (cm)")
     if title:
         ax.set_title(title, fontsize=13, pad=60)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -514,8 +518,7 @@ def main():
     cores = args.cores or list(spec) or list(dict.fromkeys(c for e in events for c in e["cores"]))
     photos = match_photos(args.photos, cores)
     photos.update({c: s["file"] for c, s in spec.items() if s.get("file")})
-    scales, summary = resolve_photo_depths(cores, photos, spec,
-                                           counts_bottoms(args.events, args.depth_col))
+    scales, summary = resolve_photo_depths(cores, photos, spec)
     print(summary.to_string(index=False))
     if args.check:
         plot_scale_check(scales, events, args.check, cores=cores, spec=spec)
