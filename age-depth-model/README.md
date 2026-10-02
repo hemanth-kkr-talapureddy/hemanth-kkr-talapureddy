@@ -87,26 +87,34 @@ the age-depth figure**, so E1, E2, … match between the two figures.
 
 ## Depth scale of each photo
 
-Read from the photo itself, in this order:
+**Read automatically from the ruler in the photo.** The code finds the
+white/grey 10 cm blocks of the ruler beside the core, fits depth → pixel
+(dropping edges that do not fit, such as a differently printed 100 cm mark),
+and checks the scale against the 1 cm tick spacing measured independently. It
+also finds which end of the photo is the core top (the ruler reads grey 0–10,
+white 10–20, … and its 0 sits at the core-top edge), so photos taken either way
+round are handled. This works at any photo resolution.
 
-1. **Two ruler readings** (most accurate): two depths read off the ruler in the
-   photo and their pixel positions along the core (the y coordinate for an
-   upright photo, x for a sideways one, as any image viewer shows).
-2. One ruler reading plus pixels per cm (or the photo's stored DPI).
-3. Pixels per cm (or stored DPI) plus the depth at the photo's top edge.
-4. The depths at the photo's top and bottom edges.
-5. Last resort, marked **APPROXIMATE**: stretched to the deepest counted depth.
+Manual alternatives (they override the automatic reading): two ruler readings
+(depth and pixel position of two marks), one reading plus pixels per cm or the
+photo's stored DPI, or the depths at the photo's top and bottom edges. A photo
+without any depth scale is refused - it is never stretched to fit the counts.
 
 Always look at the **scale check** figure (`plot_scale_check`, or `--check`):
-it draws the code's depth ticks (every 1 cm, lines every 5 cm) over each full
-photo, and they must sit on the photo's own ruler before the events are trusted.
+red lines every 5 cm must run through the photo ruler's own numbers.
+
+## Resolution
+
+Photos are never cropped or shrunk. In the **PDF and SVG** every photo is
+embedded at its original pixel size (pixel-for-pixel identical) with the event
+drawing as vectors - use these in a design canvas. The PNG uses the dpi that
+keeps the photos' own pixels per cm, up to a size limit (`max_png_megapixels`).
 
 ## Run in Google Colab
 
 Open `core_photos_colab.ipynb` in Colab and run the cells in order: upload the
-photos and the event file, read two ruler marks per photo (a helper shows each
-photo with pixel coordinates), check the scale-check figure, then draw and
-download the final figure.
+photos and the varve workbook, check the scale-check figure, then download the
+PDF/SVG (full resolution) and PNG.
 
 ## Inputs
 

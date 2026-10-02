@@ -68,7 +68,7 @@ from PIL import Image
 from plot_age_depth import EVENT_COLORS, _event_table, read_cores, read_events
 
 Image.MAX_IMAGE_PIXELS = None  # core scans can be very large
-MAX_PIXELS_LONG_SIDE = 6000  # only for drawing; the depth scale uses the full-size photo
+CHECK_PIXELS_LONG_SIDE = 6000  # the scale-check figure uses a smaller copy (faster)
 SPEC_KEYS = ("ref1_px", "ref1_cm", "ref2_px", "ref2_cm", "px_per_cm", "top", "bottom",
              "top_side", "file")
 
@@ -259,21 +259,16 @@ def _tick_px_per_cm(rows, guess):
     return 1 / f[band][np.argmax(F[band])] if band.any() else None
 
 
-def detect_ruler_scale(path, top_side=None, block_cm=10.0, ruler_start_cm=0.0):
-    """Read the depth scale from the ruler in the photo, automatically.
+def _fit_ruler(a, block_cm=10.0):
+    """Fit the ruler in an image oriented with the core top on the LEFT.
 
-    The ruler alternates white and grey blocks every `block_cm` (10 cm). The
-    block edges are found along the ruler strip (beside the core), fitted with
-    a straight line (depth -> pixel) after removing edges that do not fit
-    (e.g. a differently printed 100 cm mark), and checked against the 1 cm
-    tick spacing measured independently. The ruler is assumed to start at
-    `ruler_start_cm` at the photo's core-top edge.
-
-    Returns (depth at the photo's top edge, px per cm, report dict) or
-    (None, None, report) if no ruler is found.
+    Returns the best fit over both long sides of the photo, as a dict with
+    x0 (pixel of ruler 0), ppc (px per cm), the edges used and a direction
+    score: on these rulers 0-10 cm is grey, 10-20 white, 20-30 grey, ..., so
+    going down-core grey->white changes fall at 10, 30, 50 ... cm and
+    white->grey at 20, 40 ... cm. The score is the fraction of edges that
+    follow this pattern (1 = ruler reads the right way, ~0 = reversed).
     """
-    w, h, side, length, _ = photo_geometry(path, top_side)
-    a = _oriented_gray(path, side)
     best = None
     for bottom in (True, False):  # ruler on either long side of the core
         rows = _ruler_band(a, bottom)
@@ -298,24 +293,60 @@ def detect_ruler_scale(path, top_side=None, block_cm=10.0, ruler_start_cm=0.0):
             if abs(resid[worst]) <= 1.5 or len(e) <= 4:
                 break
             e, rs, n = np.delete(e, worst), np.delete(rs, worst), np.delete(n, worst)
-        x0, ppc, _ = coef
+        direction = float(np.mean(np.where(rs, n % 2 == 1, n % 2 == 0)))
         score = contrast * len(e)
-        if best is None or score > best[0]:
-            best = (score, x0, ppc, e, n, resid, rows)
-    if best is None:
+        if best is None or score > best["score"]:
+            best = {"score": score, "x0": coef[0], "ppc": coef[1], "edges": e, "n": n,
+                    "resid": resid, "rows": rows, "direction": direction}
+    return best
+
+
+def detect_ruler_scale(path, top_side=None, block_cm=10.0, ruler_start_cm=0.0):
+    """Read the depth scale - and which end is the core top - from the ruler.
+
+    The ruler alternates grey and white blocks every `block_cm` (10 cm). The
+    block edges along the ruler strip (beside the core) are fitted with a
+    straight line (depth -> pixel) after removing edges that do not fit (e.g. a
+    differently printed 100 cm mark), and the scale is checked against the 1 cm
+    tick spacing measured independently. If `top_side` is not given, both ends
+    of the photo are tried and the one where the ruler reads the right way
+    (grey 0-10 cm, white 10-20 cm, ...) is taken as the core top. The ruler is
+    assumed to start at `ruler_start_cm` at the core-top edge of the photo.
+
+    Returns (depth at the photo's core-top edge, px per cm, report dict with
+    "side" = the core-top edge), or (None, None, report) if no ruler is found.
+    """
+    w, h = Image.open(path).size
+    sides = [top_side.lower()] if top_side else (["left", "right"] if w > h else ["top", "bottom"])
+    fits = {}
+    for side in sides:
+        fit = _fit_ruler(_oriented_gray(path, side), block_cm)
+        if fit:
+            fits[side] = fit
+    if not fits:
         return None, None, {"ok": False, "why": "no ruler found"}
-    _, x0, ppc, e, n, resid, rows = best
-    tick = _tick_px_per_cm(rows, ppc)
+    # core top = the end where the ruler reads the right way and its 0 mark sits at
+    # the photo edge (on these photos the ruler starts exactly at the core-top edge)
+    edge_cm = {k: abs(v["x0"]) / v["ppc"] for k, v in fits.items()}
+    side = max(fits, key=lambda k: (round(fits[k]["direction"], 1), -edge_cm[k]))
+    f = fits[side]
+    tick = _tick_px_per_cm(f["rows"], f["ppc"])
     report = {
-        "ok": True, "px_per_cm": ppc, "block_edges_used": len(e),
-        "marks_cm": f"{ruler_start_cm + n.min() * block_cm:g}-{ruler_start_cm + n.max() * block_cm:g}",
-        "max_misfit_mm": float(np.abs(resid).max() / ppc * 10),
+        "ok": True, "side": side, "px_per_cm": f["ppc"], "block_edges_used": len(f["edges"]),
+        "direction_score": f["direction"],
+        "ruler0_from_edge_cm": edge_cm[side],
+        "other_end": None if len(fits) < 2 else {
+            "direction_score": next(v["direction"] for k, v in fits.items() if k != side),
+            "ruler0_from_edge_cm": next(edge_cm[k] for k in fits if k != side)},
+        "marks_cm": f"{ruler_start_cm + f['n'].min() * block_cm:g}-"
+                    f"{ruler_start_cm + f['n'].max() * block_cm:g}",
+        "max_misfit_mm": float(np.abs(f["resid"]).max() / f["ppc"] * 10),
         "tick_px_per_cm": tick,
-        "scale_agreement_pct": None if tick is None else float(abs(tick - ppc) / ppc * 100),
-        "ruler0_offset_px": float(x0),
+        "scale_agreement_pct": None if tick is None else float(abs(tick - f["ppc"]) / f["ppc"] * 100),
+        "ruler0_offset_px": float(f["x0"]),
     }
     # x0 = pixel position (from the core-top edge) of ruler mark ruler_start_cm
-    return ruler_start_cm - x0 / ppc, ppc, report
+    return ruler_start_cm - f["x0"] / f["ppc"], f["ppc"], report
 
 
 def photo_scale(path, spec):
@@ -352,7 +383,8 @@ def photo_scale(path, spec):
         return top, ppc_dpi, "photo DPI + top depth"
     t_auto, ppc_auto, rep = detect_ruler_scale(path, spec.get("top_side"))
     if ppc_auto:
-        return t_auto, ppc_auto, "ruler (read automatically)"
+        spec["top_side"] = rep["side"]  # core-top end found from the ruler
+        return t_auto, ppc_auto, f"ruler (read automatically; core top = {rep['side']} edge)"
     return None, None, "NO DEPTH SCALE - add two ruler readings"
 
 
@@ -394,14 +426,19 @@ def resolve_photo_depths(cores, photos, photo_depths=None):
     return scales, summary
 
 
-def load_upright(path, side):
-    """The whole photo (nothing cropped), turned so the core top is at the top edge."""
+def load_upright(path, side, max_px=None):
+    """The whole photo (nothing cropped), turned so the core top is at the top edge.
+
+    Turning is an exact pixel transpose (no resampling). The photo is kept at its
+    original size unless `max_px` (long side) asks for a smaller copy.
+    """
     img = Image.open(path).convert("RGB")
-    rotate = {"top": 0, "left": -90, "right": 90, "bottom": 180}[side]
-    if rotate:
-        img = img.rotate(rotate, expand=True)
-    scale = MAX_PIXELS_LONG_SIDE / max(img.size)
-    if scale < 1:  # smaller copy for drawing only; it still spans the same cm extent
+    turn = {"top": None, "left": Image.Transpose.ROTATE_270, "right": Image.Transpose.ROTATE_90,
+            "bottom": Image.Transpose.ROTATE_180}[side]
+    if turn is not None:
+        img = img.transpose(turn)
+    if max_px and max(img.size) > max_px:
+        scale = max_px / max(img.size)
         img = img.resize((round(img.size[0] * scale), round(img.size[1] * scale)), Image.LANCZOS)
     return img
 
@@ -456,12 +493,13 @@ def _layout(cores, scales, events, gap_cm, default_width_cm):
     return columns, x - gap_cm
 
 
-def _draw_photo(ax, col):
+def _draw_photo(ax, col, max_px=None, interpolation="none"):
     s = col["scale"]
     if s:
-        ax.imshow(load_upright(s["file"], s["top_side"]),
+        # interpolation="none": PDF/SVG embed the photo's own pixels, not a resampled copy
+        ax.imshow(load_upright(s["file"], s["top_side"], max_px),
                   extent=(col["x0"], col["x1"], col["bottom"], col["top"]),
-                  interpolation="lanczos", zorder=1)
+                  interpolation=interpolation, zorder=1)
     else:
         ax.add_patch(Rectangle((col["x0"], col["top"]), col["x1"] - col["x0"],
                                col["bottom"] - col["top"], facecolor="0.92", edgecolor="0.6",
@@ -489,11 +527,20 @@ def _auto_ylim(columns, ystep):
 
 def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0,
                      default_width_cm=7.0, ystep=5, fill_alpha=0.18, link_alpha=0.35,
-                     height_in=12, title=None, table=True):
+                     height_in=12, title=None, table=True, png_dpi="native",
+                     max_png_megapixels=400):
     """Full photos side by side at true scale with the event layers.
 
     scales: from resolve_photo_depths(); events: from read_event_depths().
+
+    Resolution: in a PDF or SVG every photo is embedded at its ORIGINAL pixel
+    size (nothing resampled or cropped), and the event drawing stays vector -
+    best for editing in a design canvas. For a PNG, png_dpi="native" picks the
+    dpi that keeps the photos' own pixels per cm, limited to max_png_megapixels
+    (all 8 full-size cores side by side can be several hundred megapixels); a
+    number sets the dpi directly.
     """
+    vector = str(out_path).lower().endswith((".pdf", ".svg", ".eps"))
     cores = cores or list(dict.fromkeys(list(scales) + [c for e in events for c in e["cores"]]))
     columns, total_w = _layout(cores, scales, events, gap_cm, default_width_cm)
     ylim = ylim or _auto_ylim(columns, ystep)
@@ -502,7 +549,7 @@ def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0
     fig, ax = plt.subplots(figsize=(fig_w, height_in))
 
     for col in columns:
-        _draw_photo(ax, col)
+        _draw_photo(ax, col, interpolation="none" if vector else "antialiased")
         ax.text((col["x0"] + col["x1"]) / 2, min(ylim) - 0.012 * span, col["core"],
                 ha="left", va="bottom", rotation=40, rotation_mode="anchor", fontsize=9)
 
@@ -554,7 +601,19 @@ def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0
         _event_table(tax, events, all_cores, depth_label="Depth in\ncore (cm)")
     if title:
         ax.set_title(title, fontsize=13, pad=60)
-    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    dpi = 300
+    if not vector:
+        fig.canvas.draw()
+        in_per_cm = ax.get_window_extent().height / fig.dpi / span
+        ppc_max = max((c["scale"]["px_per_cm"] for c in columns if c["scale"]), default=0)
+        cap = np.sqrt(max_png_megapixels * 1e6 / (fig.get_figwidth() * fig.get_figheight()))
+        dpi = (min(ppc_max / in_per_cm, cap) if png_dpi == "native" else float(png_dpi)) if ppc_max else 300
+        dpi = max(dpi, 150)
+        kept = dpi * in_per_cm
+        print(f"PNG at {dpi:.0f} dpi = {kept:.1f} px per cm of core "
+              f"(photos have up to {ppc_max:.1f} px/cm"
+              + (")" if kept >= ppc_max - 0.5 else "; use the PDF/SVG for full resolution)"))
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
     print(f"Saved {out_path}")
     return fig
 
@@ -574,7 +633,7 @@ def plot_scale_check(scales, events, out_path, cores=None, spec=None, height_in=
     span = max(ylim) - min(ylim)
     fig, ax = plt.subplots(figsize=(max(6.0, height_in * (total_w + 4) / span + 2), height_in))
     for col in columns:
-        _draw_photo(ax, col)
+        _draw_photo(ax, col, max_px=CHECK_PIXELS_LONG_SIDE, interpolation="antialiased")
         s, x0, x1 = col["scale"], col["x0"], col["x1"]
         for d in np.arange(np.ceil(col["top"]), np.floor(col["bottom"]) + 1):
             major = d % 5 == 0
