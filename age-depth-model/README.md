@@ -10,6 +10,14 @@ three-panel figure with linked age, depth and varve-thickness scales:
 Varve thickness is calculated from the depth of each varve top, so event
 layers (thick turbidites) stand out as spikes in **b** and **c**.
 
+## Run in Google Colab
+
+Open `age_depth_colab.ipynb` in Colab (**File → Upload notebook**), then run the
+cells from top to bottom. It asks you to upload your Excel file and downloads the
+figure as PNG and PDF.
+
+## Run locally
+
 ```bash
 pip install pandas numpy matplotlib openpyxl
 python plot_age_depth.py my_varve_counts.xlsx -o age_depth_model.png --xlim 1700 2050 --ylim 90 0 --event-mm 10
