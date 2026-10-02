@@ -71,53 +71,65 @@ is the result.
 
 ---
 
-# Core photos with event layers (true scale)
+# Core photos with event layers (true scale, photos not cropped)
 
-`plot_core_photos.py` places the core photos side by side on one depth axis (cm),
-each at its real proportions (its width in cm comes from the same cm-per-pixel
-scale as its length, and the plot uses equal x and y scales). Every event layer
-is drawn on the photos at its depth, with a coloured bar beside the core, and a
-shaded band links the same event between neighbouring cores (a band that skips a
-core without that event runs behind it). **Event colours are the same as in the
-age-depth figure**, so E1, E2, … match between the two figures.
+`plot_core_photos.py` uses each core photo **exactly as provided** (nothing is
+cropped): the whole image, ruler and background included, is placed on one
+shared depth axis (cm) with its own linear depth scale,
+
+    depth = depth at the photo's top edge + pixel position / pixels per cm
+
+The same pixels-per-cm sets the photo's width and the plot uses equal x and y
+scales, so each photo keeps its real proportions. Event layers are drawn on that
+same depth scale, with a coloured bar beside the core and a shaded band linking
+the same event between neighbouring cores. **Event colours are the same as in
+the age-depth figure**, so E1, E2, … match between the two figures.
+
+## Depth scale of each photo
+
+Read from the photo itself, in this order:
+
+1. **Two ruler readings** (most accurate): two depths read off the ruler in the
+   photo and their pixel positions along the core (the y coordinate for an
+   upright photo, x for a sideways one, as any image viewer shows).
+2. One ruler reading plus pixels per cm (or the photo's stored DPI).
+3. Pixels per cm (or stored DPI) plus the depth at the photo's top edge.
+4. The depths at the photo's top and bottom edges.
+5. Last resort, marked **APPROXIMATE**: stretched to the deepest counted depth.
+
+Always look at the **scale check** figure (`plot_scale_check`, or `--check`):
+it draws the code's depth ticks (every 1 cm, lines every 5 cm) over each full
+photo, and they must sit on the photo's own ruler before the events are trusted.
 
 ## Run in Google Colab
 
-Open `core_photos_colab.ipynb` in Colab and run the cells in order. It asks for
-the photos and the event depth file, then works out the depth at the top and
-bottom edge of each photo and shows where each value came from:
-
-1. a value you typed (`PHOTO_BOTTOM_CM`, or `PX_PER_CM`) always wins;
-2. otherwise the photo's stored resolution (DPI), which core scanners save, gives
-   the true scale;
-3. otherwise the photo is stretched to the deepest counted depth of that core in
-   the varve workbook. This is marked **APPROXIMATE** - check it.
+Open `core_photos_colab.ipynb` in Colab and run the cells in order: upload the
+photos and the event file, read two ruler marks per photo (a helper shows each
+photo with pixel coordinates), check the scale-check figure, then draw and
+download the final figure.
 
 ## Inputs
 
-- **Photos** (JPG, PNG, TIFF), cropped to the core. The file name must contain
-  the core ID (`GUAC-22A-1G-1.jpg`, `guac_22a_1g_1.tif`, …). Sideways photos are
-  turned upright (core top assumed on the left unless you set `Top side`).
-- **Photo depths** (optional): table with `Core`, `Top (cm)`, `Bottom (cm)` (or
-  `Px per cm` instead of the bottom), optional `File` and `Top side`. Without it,
-  the photo DPI or the varve counts are used as above.
-- **Event depths**: the varve workbook's **Events** sheet (uses the
-  `Depth (in core)` column by default, to match the photos), or a table with
-  `Core`, `Event`, `Top (cm)`, `Base (cm)`.
-
-Depths for photos and events must use the same reference (e.g. both measured
-from the top of the core liner).
+- **Photos** (JPG, PNG, TIFF) as provided. The file name must contain the core ID
+  (`GUAC-22A-1G-1.jpg`, `guac_22a_1g_1.tif`, …). Sideways photos are turned
+  upright (core top on the left unless `Top side` says otherwise).
+- **Photo depth table** (CSV/Excel, optional): `Core` and any of `Ref1 cm`,
+  `Ref1 px`, `Ref2 cm`, `Ref2 px`, `Px per cm`, `Top (cm)`, `Bottom (cm)`,
+  `Top side`, `File`.
+- **Event depths**: the varve workbook's **Events** sheet (`Depth (in core)`
+  column by default) or a table `Core, Event, Top (cm), Base (cm)`. Use the same
+  depth reference as the photo rulers.
 
 ```bash
-python plot_core_photos.py --photos photos/*.jpg --events Lachua_Varve_counts.xlsx \
-    -o core_photos_events.pdf                       # photo depths worked out automatically
 python plot_core_photos.py --photos photos/*.jpg --photo-depths photo_depths.csv \
-    --events Lachua_Varve_counts.xlsx -o core_photos_events.pdf
+    --events Lachua_Varve_counts.xlsx -o core_photos_events.pdf --check scale_check.png
 ```
 
 ## Example
 
-`make_example_photos.py` draws **synthetic** core photos from the synthetic
-workbook (one saved sideways). `example_core_photos.png` is the result.
+`make_example_photos.py` draws **synthetic** uncropped core photos (background,
+ruler, liner; one sideways, one storing its DPI) and their ruler readings.
+
+![example scale check](example_scale_check.png)
 
 ![example core photos](example_core_photos.png)
