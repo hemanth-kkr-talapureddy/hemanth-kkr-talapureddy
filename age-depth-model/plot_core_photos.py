@@ -214,6 +214,110 @@ def photo_px_per_cm(path):
     return d / 2.54 if d > 100 else None
 
 
+def _oriented_gray(path, side):
+    """Grey photo turned so the core top is on the LEFT (core axis along x)."""
+    img = Image.open(path).convert("L")
+    rotate = {"left": 0, "top": 90, "right": 180, "bottom": -90}[side]
+    if rotate:
+        img = img.rotate(rotate, expand=True)
+    return np.asarray(img, float)
+
+
+def _ruler_band(a, bottom=True):
+    """Rows of the ruler strip: beyond the darkest row near that photo edge."""
+    h = a.shape[0]
+    if not bottom:
+        a = a[::-1]
+    band = a[int(h * 0.7):]
+    dark = int(np.argmin(np.median(band, axis=1)))
+    return band[dark + 2:]
+
+
+def _block_edges(rows):
+    """Sub-pixel x positions of white/grey block changes along the ruler."""
+    p = np.median(rows, axis=0)
+    k = max(3, len(p) // 400)
+    ps = np.convolve(p, np.ones(k) / k, mode="same")
+    lo, hi = np.percentile(ps, 10), np.percentile(ps, 90)
+    thr = (lo + hi) / 2
+    idx = np.where(np.diff((ps > thr).astype(int)) != 0)[0]
+    idx = idx[(idx > k) & (idx < len(ps) - k - 1)]
+    edges = idx + (thr - ps[idx]) / (ps[idx + 1] - ps[idx])
+    rising = ps[idx + 1] > ps[idx]
+    return edges, rising, hi - lo
+
+
+def _tick_px_per_cm(rows, guess):
+    """Independent px/cm from the repeating 1 cm tick pattern (Fourier peak)."""
+    p = rows.mean(axis=0)
+    win = max(3, int(guess * 2))
+    p = p - np.convolve(p, np.ones(win) / win, mode="same")
+    n = len(p) * 16
+    F = np.abs(np.fft.rfft(p * np.hanning(len(p)), n=n))
+    f = np.fft.rfftfreq(n)
+    band = (f > 1 / (guess * 1.3)) & (f < 1 / (guess * 0.7))
+    return 1 / f[band][np.argmax(F[band])] if band.any() else None
+
+
+def detect_ruler_scale(path, top_side=None, block_cm=10.0, ruler_start_cm=0.0):
+    """Read the depth scale from the ruler in the photo, automatically.
+
+    The ruler alternates white and grey blocks every `block_cm` (10 cm). The
+    block edges are found along the ruler strip (beside the core), fitted with
+    a straight line (depth -> pixel) after removing edges that do not fit
+    (e.g. a differently printed 100 cm mark), and checked against the 1 cm
+    tick spacing measured independently. The ruler is assumed to start at
+    `ruler_start_cm` at the photo's core-top edge.
+
+    Returns (depth at the photo's top edge, px per cm, report dict) or
+    (None, None, report) if no ruler is found.
+    """
+    w, h, side, length, _ = photo_geometry(path, top_side)
+    a = _oriented_gray(path, side)
+    best = None
+    for bottom in (True, False):  # ruler on either long side of the core
+        rows = _ruler_band(a, bottom)
+        if rows.shape[0] < 3:
+            continue
+        edges, rising, contrast = _block_edges(rows)
+        if len(edges) < 4:
+            continue
+        gap = np.median(np.diff(edges))
+        keep = np.array([any(abs(abs(edges[j] - edges[i]) - gap) < 0.12 * gap
+                             for j in (i - 1, i + 1) if 0 <= j < len(edges))
+                         for i in range(len(edges))])
+        e, rs = edges[keep], rising[keep]
+        if len(e) < 4:
+            continue
+        n = np.round(e / gap)
+        for _ in range(5):  # fit, drop the worst misfit > 1.5 px, refit
+            A = np.column_stack([np.ones(len(e)), n * block_cm, np.where(rs, 1.0, -1.0)])
+            coef, *_ = np.linalg.lstsq(A, e, rcond=None)
+            resid = e - A @ coef
+            worst = int(np.argmax(np.abs(resid)))
+            if abs(resid[worst]) <= 1.5 or len(e) <= 4:
+                break
+            e, rs, n = np.delete(e, worst), np.delete(rs, worst), np.delete(n, worst)
+        x0, ppc, _ = coef
+        score = contrast * len(e)
+        if best is None or score > best[0]:
+            best = (score, x0, ppc, e, n, resid, rows)
+    if best is None:
+        return None, None, {"ok": False, "why": "no ruler found"}
+    _, x0, ppc, e, n, resid, rows = best
+    tick = _tick_px_per_cm(rows, ppc)
+    report = {
+        "ok": True, "px_per_cm": ppc, "block_edges_used": len(e),
+        "marks_cm": f"{ruler_start_cm + n.min() * block_cm:g}-{ruler_start_cm + n.max() * block_cm:g}",
+        "max_misfit_mm": float(np.abs(resid).max() / ppc * 10),
+        "tick_px_per_cm": tick,
+        "scale_agreement_pct": None if tick is None else float(abs(tick - ppc) / ppc * 100),
+        "ruler0_offset_px": float(x0),
+    }
+    # x0 = pixel position (from the core-top edge) of ruler mark ruler_start_cm
+    return ruler_start_cm - x0 / ppc, ppc, report
+
+
 def photo_scale(path, spec):
     """Linear depth scale of one photo: (depth at top edge, px per cm, source).
 
@@ -246,6 +350,9 @@ def photo_scale(path, spec):
         return top, length / (g("bottom") - top), "top + bottom depths"
     if ppc_dpi:
         return top, ppc_dpi, "photo DPI + top depth"
+    t_auto, ppc_auto, rep = detect_ruler_scale(path, spec.get("top_side"))
+    if ppc_auto:
+        return t_auto, ppc_auto, "ruler (read automatically)"
     return None, None, "NO DEPTH SCALE - add two ruler readings"
 
 
@@ -443,7 +550,8 @@ def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0
         fig.canvas.draw()
         pos = ax.get_position()
         tax = fig.add_axes([pos.x1 + 0.01, pos.y0 + 0.35 * pos.height, 0.22, 0.65 * pos.height])
-        _event_table(tax, events, cores, depth_label="Depth in\ncore (cm)")
+        all_cores = list(dict.fromkeys(c for e in events for c in e["cores"]))  # whole workbook
+        _event_table(tax, events, all_cores, depth_label="Depth in\ncore (cm)")
     if title:
         ax.set_title(title, fontsize=13, pad=60)
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
