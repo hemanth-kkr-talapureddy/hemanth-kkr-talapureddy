@@ -2,12 +2,14 @@
 Varve-counted age-depth model figure.
 
 Reads varve counts for one or more cores from an Excel workbook and draws a
-three-panel figure with linked scales:
+figure with linked scales:
 
-  (a) age-depth model: age (yr CE) vs depth (cm), one line per core
-  (b) thickness vs depth: background varves (points) and event layers (bars
-      spanning each layer's depth interval), on the same depth axis as (a)
-  (c) thickness through time: one strip per core, on the same age axis as (a)
+  (a) age-depth model: age (yr CE) vs depth (cm), one line per core. Every
+      event layer is drawn as a thick bar on its core's curve; events that are
+      correlated between cores (from an "Events" sheet) are joined by a dashed
+      tie line and labelled E1, E2, ..., and a table beside the plot gives each
+      event's age and depth range across the cores
+  (b) thickness through time: one strip per core, on the same age axis as (a)
 
 Event layers are found from the counts themselves: when the same year is
 listed on consecutive rows with increasing depth, the depth between them is
@@ -33,7 +35,11 @@ Accepted workbook layouts (detected automatically)
 
 Header cells are matched case-insensitively: "year"/"age"/"CE"/"AD",
 "depth", "thick". If a core appears on more than one sheet (e.g. an extra
-"Events" sheet), only the first is used. Depths are in cm.
+"Events" sheet), only the first is used for the counts. Depths are in cm.
+
+Correlated events (optional): a sheet whose name contains "event", in the same
+layout, with two rows per event (its top and base in every core). See
+read_events().
 
 Usage
 -----
@@ -50,7 +56,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
-from matplotlib.ticker import FuncFormatter, LogLocator
+from matplotlib.ticker import FuncFormatter
 
 PLAIN = FuncFormatter(lambda v, _: f"{v:g}")  # 0.1, 1, 10 instead of 10^-1
 
@@ -182,6 +188,62 @@ def split_varves_events(df):
     return pd.DataFrame(rows_v, columns=cols), pd.DataFrame(rows_e, columns=cols)
 
 
+def read_events(source, depth_col="adjusted", sheet=None):
+    """Read correlated event layers from an "Events" sheet, if the workbook has one.
+
+    The sheet uses the same layout as the counts (core ID row, then Year/Depth
+    headers). Rows come in pairs, one pair per event: the top row and the base
+    row of that event in every core, e.g. rows 1-2 = E1, rows 3-4 = E2. A core
+    with no layer for an event has blank cells. Reading stops at the first
+    fully blank row.
+
+    Returns [{"name": "E1", "cores": {core_id: (year, top, base)}}, ...], or []
+    when there is no such sheet.
+    """
+    if isinstance(source, (bytes, bytearray)):
+        source = io.BytesIO(source)
+    if hasattr(source, "seek"):
+        source.seek(0)
+    book = pd.ExcelFile(source, engine="openpyxl")
+    names = [sheet] if sheet else [n for n in book.sheet_names if "event" in n.lower()]
+    for sheet_name in names:
+        raw = book.parse(sheet_name, header=None)
+        raw = raw.dropna(axis=1, how="all")
+        raw.columns = range(raw.shape[1])
+        hdr = _header_row(raw)
+        if hdr is None:
+            continue
+        series = {}
+        for name, cols in _column_groups(raw, hdr):
+            labels = {c: str(raw.iat[hdr, c]) for c in cols}
+            year_c = [c for c in cols if YEAR_RE.search(labels[c])]
+            depth_c = [c for c in cols if DEPTH_RE.search(labels[c])]
+            if name is None or not (year_c and depth_c):
+                continue
+            preferred = [c for c in depth_c if depth_col and depth_col.lower() in labels[c].lower()]
+            series[str(name).strip()] = (
+                pd.to_numeric(raw[year_c[0]].iloc[hdr + 1:], errors="coerce").to_numpy(),
+                pd.to_numeric(raw[(preferred or depth_c)[0]].iloc[hdr + 1:], errors="coerce").to_numpy())
+        if not series:
+            continue
+        years = np.array([y for y, _ in series.values()])
+        blank = np.isnan(years).all(axis=0)
+        n_rows = int(np.argmax(blank)) if blank.any() else years.shape[1]
+        events = []
+        for k in range(n_rows // 2):
+            per_core = {}
+            for core, (y, d) in series.items():
+                y1, y2, d1, d2 = y[2 * k], y[2 * k + 1], d[2 * k], d[2 * k + 1]
+                if not np.isnan([y1, d1, d2]).any() and d2 > d1:
+                    per_core[core] = (y1, d1, d2)
+            if per_core:
+                events.append({"name": f"E{k + 1}", "cores": per_core})
+        if events:
+            print(f"Read {len(events)} correlated events from sheet '{sheet_name}'.")
+            return events
+    return []
+
+
 # ----------------------------------------------------------------------------
 # Plotting
 # ----------------------------------------------------------------------------
@@ -230,10 +292,37 @@ def plot_age_depth(cores, out_path, xlim=None, ylim=None, style="line",
     return fig
 
 
-def plot_age_depth_panel(cores, out_path, xlim=None, ylim=None, style="line",
+def _event_table(ax, events, cores):
+    """Table of each correlated event's age and depth range across the cores."""
+    rows = []
+    for ev in events:
+        y = [v[0] for v in ev["cores"].values()]
+        tops = [v[1] for v in ev["cores"].values()]
+        bases = [v[2] for v in ev["cores"].values()]
+        age = f"{min(y):.0f}" if min(y) == max(y) else f"{min(y):.0f}–{max(y):.0f}"
+        rows.append([ev["name"], age, f"{min(tops):.1f}–{max(bases):.1f}",
+                     f"{len(ev['cores'])}/{len(cores)}"])
+    ax.axis("off")
+    table = ax.table(cellText=rows, colLabels=["Event", "Age\n(yr CE)", "Depth\n(cm)", "Cores"],
+                     loc="upper center", cellLoc="center", colWidths=[0.2, 0.32, 0.32, 0.18])
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)
+    table.scale(1, 0.85)
+    for (r, _), cell in table.get_celld().items():
+        cell.set_edgecolor("0.8")
+        cell.set_linewidth(0.5)
+        if r == 0:
+            cell.set_text_props(fontweight="bold")
+            cell.set_facecolor("0.93")
+            cell.set_height(cell.get_height() * 1.8)
+
+
+def plot_age_depth_panel(cores, out_path, events=None, xlim=None, ylim=None, style="line",
                          title=None, xstep=50, ystep=10, event_mm=None):
-    """Three panels with linked age, depth and thickness scales (see module docstring)."""
+    """(a) age-depth curves with event layers and event tie lines, plus a table
+    of event ages and depths; (b) thickness through time, one strip per core."""
     names = list(cores)
+    events = events or []
     colors = {n: CORE_COLORS[i % len(CORE_COLORS)] for i, n in enumerate(names)}
     parts = {n: split_varves_events(df) for n, df in cores.items()}
     xlim, ylim = _auto_limits(cores, xlim, ylim, xstep, ystep)
@@ -242,42 +331,46 @@ def plot_age_depth_panel(cores, out_path, xlim=None, ylim=None, style="line",
 
     n = len(names)
     fig = plt.figure(figsize=(12, 8.5 + 0.45 * n))
-    outer = fig.add_gridspec(2, 2, width_ratios=[3.2, 1], height_ratios=[3, 0.16 * n + 0.4],
-                             wspace=0.1, hspace=0.08)
+    outer = fig.add_gridspec(2, 2, width_ratios=[3.2, 1] if events else [1, 0.001],
+                             height_ratios=[3, 0.16 * n + 0.4], wspace=0.04, hspace=0.08)
     ax = fig.add_subplot(outer[0, 0])
-    axb = fig.add_subplot(outer[0, 1], sharey=ax)
     strips = outer[1, 0].subgridspec(n, 1, hspace=0)
-    axc = [fig.add_subplot(strips[i], sharex=ax) for i in range(n)]
+    axs = [fig.add_subplot(strips[i], sharex=ax) for i in range(n)]
 
     # (a) age-depth model
     for name, df in cores.items():
-        ax.plot(df["year"], df["depth"], color=colors[name], lw=1.5, label=name,
+        ax.plot(df["year"], df["depth"], color=colors[name], lw=1.5, label=name, zorder=3,
                 drawstyle="steps-post" if style == "steps" else "default")
+        # every event layer in the counts, drawn as a thick bar over the curve
+        evt = parts[name][1]
+        ax.vlines(evt["year"], evt["top"], evt["base"], color=colors[name], lw=4.5,
+                  alpha=0.45, zorder=2)
     _style_age_depth(ax, xlim, ylim, xstep, ystep)
 
-    # (b) thickness vs depth: varves as points, each event layer as a bar at its
-    # thickness spanning its depth interval
-    for name, (var, evt) in parts.items():
-        axb.scatter(var["thickness"], (var["top"] + var["base"]) / 2, s=4,
-                    color=colors[name], alpha=0.5, lw=0)
-        axb.vlines(evt["thickness"], evt["top"], evt["base"], color=colors[name], lw=2.2,
-                   alpha=0.85)
-    axb.set_xscale("log")
-    axb.set_xlim(tlim)
-    axb.xaxis.set_major_locator(LogLocator(base=10, numticks=10))
-    axb.xaxis.set_major_formatter(PLAIN)
-    axb.xaxis.tick_top()
-    axb.xaxis.set_label_position("top")
-    axb.set_xlabel("Thickness (mm)", fontsize=12, labelpad=8)
-    axb.tick_params(labelleft=False)
-    axb.grid(color="0.9", lw=0.6)
-    axb.set_axisbelow(True)
-    axb.legend(handles=[Line2D([], [], color="0.3", marker="o", ms=3, ls="none", label="Varve"),
-                        Line2D([], [], color="0.3", lw=2.2, label="Event layer")],
-               loc="lower right", fontsize=8, frameon=True, framealpha=0.9, edgecolor="0.8")
+    # correlated events: dashed tie line through the middle of the layer in each
+    # core, joined from the shallowest to the deepest core, labelled at the deepest
+    placed = []
+    for ev in events:
+        pts = sorted(((t + b) / 2, y) for y, t, b in ev["cores"].values())
+        ys, xs = zip(*pts)
+        ax.plot(xs, ys, color="0.15", ls=(0, (4, 2)), lw=0.9, zorder=4)
+        ax.plot(xs, ys, "o", ms=2.5, color="0.15", zorder=4)
+        lx, ly = xs[-1] + 2, ys[-1]  # just right of the deepest point
+        while any(abs(lx - px) < 8 and abs(ly - py) < 1.6 for px, py in placed):
+            ly += 1.6  # nudge down past a label already placed here
+        placed.append((lx, ly))
+        if ly != ys[-1]:  # leader line from a nudged label back to its point
+            ax.plot([xs[-1], lx], [ys[-1], ly], color="0.4", lw=0.5, zorder=4)
+        ax.text(lx, ly, ev["name"], fontsize=8, fontweight="bold", color="0.15", va="center", zorder=5,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=0.5))
 
-    # (c) thickness through time, one strip per core
-    for a, name in zip(axc, names):
+    tax = None
+    if events:
+        tax = fig.add_subplot(outer[0, 1])
+        _event_table(tax, events, cores)
+
+    # (b) thickness through time, one strip per core
+    for a, name in zip(axs, names):
         var, evt = parts[name]
         a.fill_between(var["year"], tlim[0], var["thickness"], step="mid",
                        color=colors[name], alpha=0.25, lw=0)
@@ -295,24 +388,30 @@ def plot_age_depth_panel(cores, out_path, xlim=None, ylim=None, style="line",
                color=colors[name])
         a.grid(axis="x", color="0.9", lw=0.6)
         a.set_axisbelow(True)
-        if a is not axc[-1]:
+        if event_mm:
+            a.axhline(event_mm, color="0.35", ls="--", lw=0.7)
+        if a is not axs[-1]:
             a.tick_params(labelbottom=False, bottom=False)
-    axc[-1].set_xlabel("Age (yr CE)", fontsize=12)
-    axc[n // 2].set_ylabel("Thickness\n(mm, log)", fontsize=10,
+    axs[-1].set_xlabel("Age (yr CE)", fontsize=12)
+    axs[n // 2].set_ylabel("Thickness\n(mm, log)", fontsize=10,
                            rotation=0, ha="right", va="center", labelpad=10)
 
-    if event_mm:
-        axb.axvline(event_mm, color="0.35", ls="--", lw=0.9)
-        for a in axc:
-            a.axhline(event_mm, color="0.35", ls="--", lw=0.7)
-
-    for a, label in ((ax, "a"), (axb, "b"), (axc[0], "c")):
-        a.text(0.012, 0.985 if a is not axc[0] else 0.92, label, transform=a.transAxes,
-               fontsize=13, fontweight="bold", va="top", zorder=5,
+    for a, label in ((ax, "a"), (axs[0], "b")):
+        a.text(0.012, 0.985 if a is ax else 0.92, label, transform=a.transAxes,
+               fontsize=13, fontweight="bold", va="top", zorder=6,
                bbox=dict(facecolor="white", edgecolor="none", pad=1.5))
 
-    ax.legend(loc="lower right", frameon=True, framealpha=0.9, edgecolor="0.8",
-              fontsize=9, ncol=2, title="Core", title_fontsize=9)
+    handles = ax.get_legend_handles_labels()[0] + [
+        Line2D([], [], color="0.5", lw=4.5, alpha=0.45, label="Event layer")]
+    if events:
+        handles.append(Line2D([], [], color="0.15", ls=(0, (4, 2)), lw=0.9, marker="o", ms=2.5,
+                              label="Correlated event"))
+    if tax is not None:  # below the event table, clear of the curves and labels
+        tax.legend(handles=handles, loc="lower center", frameon=True, edgecolor="0.8",
+                   fontsize=8, ncol=1, title="Core", title_fontsize=8.5)
+    else:
+        ax.legend(handles=handles, loc="lower right", frameon=True, framealpha=0.9,
+                  edgecolor="0.8", fontsize=9, ncol=2, title="Core", title_fontsize=9)
     if title:
         fig.suptitle(title, fontsize=14)
 
@@ -343,13 +442,15 @@ def main():
                    help="If a core has several depth columns, use the one whose header "
                         "contains this text (default: adjusted)")
     p.add_argument("--sheet", help="Read only this sheet (default: all sheets)")
+    p.add_argument("--events-sheet",
+                   help="Sheet with correlated events (default: a sheet named like 'Events')")
     p.add_argument("--layout", choices=["panel", "simple"], default="panel",
-                   help="'panel' (default): age-depth + thickness panels; "
+                   help="'panel' (default): age-depth with events + thickness strips; "
                         "'simple': age-depth curves only")
     p.add_argument("--style", choices=["line", "steps"], default="line",
                    help="Age-depth line style (default: line, as in Excel)")
     p.add_argument("--event-mm", type=float,
-                   help="Draw a dashed thickness threshold (mm) on the thickness panels")
+                   help="Draw a dashed thickness threshold (mm) on the thickness strips")
     p.add_argument("--top-year", type=int,
                    help="Year of the topmost varve (only for thickness-only sheets)")
     p.add_argument("--title", help="Optional figure title")
@@ -358,9 +459,10 @@ def main():
     cores = read_cores(args.excel, top_year=args.top_year, depth_col=args.depth_col,
                        sheet=args.sheet)
     summarize(cores)
+    events = read_events(args.excel, depth_col=args.depth_col, sheet=args.events_sheet)
     kw = dict(xlim=args.xlim, ylim=args.ylim, style=args.style, title=args.title)
     if args.layout == "panel":
-        plot_age_depth_panel(cores, Path(args.out), event_mm=args.event_mm, **kw)
+        plot_age_depth_panel(cores, Path(args.out), events=events, event_mm=args.event_mm, **kw)
     else:
         plot_age_depth(cores, Path(args.out), **kw)
 
