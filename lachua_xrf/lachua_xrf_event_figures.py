@@ -361,13 +361,16 @@ def draw_core(core, data, ev, panels, xlims, ylims, fname):
         ax.set_xlabel(p['label'], labelpad=4, fontweight='bold')
         ax.spines[['bottom', 'right']].set_visible(False)
 
-        # depth axis: ticks on every panel, numbers on the first one only
+        # ONE depth scale per figure: only the first panel has a depth axis.
+        # The other panels have no left line and no depth ticks; they share
+        # the same depths, so every point lines up with the single scale.
         ax.yaxis.set_major_locator(MultipleLocator(DEPTH_MAJOR_CM))
         ax.yaxis.set_minor_locator(MultipleLocator(DEPTH_MINOR_CM))
         if i == 0:
             ax.set_ylabel('Depth (cm)')
         else:
-            ax.tick_params(axis='y', labelleft=False)
+            ax.spines['left'].set_visible(False)
+            ax.tick_params(axis='y', which='both', left=False, labelleft=False)
     axes[0].set_ylim(bottom, top)                         # depth increases downwards
 
     # group names with a line above the panels
