@@ -26,9 +26,15 @@ PHOTO_FILE = '24A'                  # words in the photo name (jpg/png/tif)
 CORE       = 'GUAC-24A'
 DEPTH_TOP, DEPTH_BOT = 13.0, 80.0   # plotted depth window, cm (photo cropped to it)
 
-# photo calibration: core depth at the image's TOP and BOTTOM edge (from the
-# ruler in your photo). rotate=None because the 24A photo is upright.
-PHOTO_TOP_CM, PHOTO_BOT_CM, PHOTO_ROTATE = -0.09, 105.65, None
+# photo orientation: 'auto' = if the image is wider than tall, the core is
+# lying down (top on the LEFT, colour card on the RIGHT) and is turned 90°
+# clockwise. Or force it: 'cw', 'ccw' or None (no turn).
+PHOTO_ROTATE = 'auto'
+# photo calibration: core depth at the image's TOP and BOTTOM edge (after
+# turning). AUTO_CALIBRATE reads them from the ruler's 10-cm white/grey blocks
+# in the photo itself; the two numbers below are used only if that fails.
+AUTO_CALIBRATE = True
+PHOTO_TOP_CM, PHOTO_BOT_CM = -0.09, 105.65
 PHOTO_PX_PER_CM = 100               # photo reduced to this before drawing (fast)
 
 # GUAC-24A event depths (cm), copied from
@@ -246,6 +252,39 @@ page([('data', PANEL_W_CM, ['D10', 'D50', 'D90']), ('data', SORT_W_CM, ['Sorting
      f'{CORE}_DATA_realscale')
 
 # ---- 3b. photo figure ---------------------------------------------------------
+def ruler_calibration(gray):
+    """Depth (cm) at the top and bottom image edge, read from the ruler.
+    The ruler alternates white / grey every 10 cm. Every column in the left
+    and right 12 % of the image is tried; the one with the most evenly spaced
+    white/grey changes wins. Returns (top_cm, bottom_cm) or None."""
+    h, w = gray.shape
+    best = None
+    win = max(9, int(0.006 * h) | 1)       # ~0.6 cm: smooths over the ruler digits
+    for x in list(range(0, max(1, int(0.12 * w)))) + list(range(int(0.88 * w), w)):
+        prof = gray[:, x]
+        lo_, hi_ = np.percentile(prof, [15, 85])
+        if hi_ - lo_ < 40: continue                    # no white/grey contrast here
+        thr = (lo_ + hi_) / 2                           # adapts to photo brightness
+        on = np.convolve((prof > thr).astype(float), np.ones(win) / win, 'same') > 0.5
+        edges = np.where(np.diff(on.astype(int)) != 0)[0] + 1
+        if len(edges) < 5: continue
+        step = np.median(np.diff(edges))
+        # a 10-cm block is ~1/10 of a ~1-m core photo; this rejects the 1-cm
+        # tick marks and the colour card
+        if not 0.06 * h < step < 0.14 * h: continue
+        good = edges[np.abs(np.diff(np.concatenate([[edges[0] - step], edges])) - step) < 0.12 * step]
+        if len(good) < 5: continue
+        cv = np.std(np.diff(good)) / np.mean(np.diff(good))
+        if best is None or (len(good), -cv) > (len(best), -best_cv):
+            best, best_cv = good, cv
+    if best is None or best_cv > 0.08: return None
+    step = np.median(np.diff(best))
+    n0 = int(round(best[0] / step))                       # first change = n0 x 10 cm
+    depths = 10.0 * (n0 + np.round((best - best[0]) / step))
+    a, b = np.polyfit(best, depths, 1)                    # depth = a * row + b
+    if not 0.5 < a * step / 10 < 2: return None
+    return b, a * h + b
+
 def load_photo():
     p = find(PHOTO_FILE, ('.jpg', '.jpeg', '.png', '.tif', '.tiff'))
     if p is None or 'realscale' in p:
@@ -253,24 +292,45 @@ def load_photo():
     from PIL import Image
     Image.MAX_IMAGE_PIXELS = None
     img = Image.open(p)
-    per_cm = img.size[1] / (PHOTO_BOT_CM - PHOTO_TOP_CM)
-    if per_cm > PHOTO_PX_PER_CM:                          # shrink big scans first
-        k = PHOTO_PX_PER_CM / per_cm
-        img.draft('RGB', (int(img.size[0] * k), int(img.size[1] * k)))
+    w0, h0 = img.size
+    rot = PHOTO_ROTATE
+    if rot == 'auto':
+        rot = 'cw' if w0 > h0 else None
+    print(f"   photo {os.path.basename(p)}: {w0} x {h0} px "
+          f"({'lying down -> turned 90 deg clockwise' if rot == 'cw' else 'turned 90 deg anticlockwise' if rot == 'ccw' else 'upright'})")
+    # shrink big scans first (long side ~ PHOTO_PX_PER_CM x ~106 cm)
+    long_px = max(w0, h0)
+    k = min(1.0, PHOTO_PX_PER_CM * 110 / long_px)
+    if k < 0.95:
+        img.draft('RGB', (int(w0 * k), int(h0 * k)))
         img = img.convert('RGB')
-        k = PHOTO_PX_PER_CM / (img.size[1] / (PHOTO_BOT_CM - PHOTO_TOP_CM))
-        if k < 0.95:
-            img = img.resize((round(img.size[0] * k), round(img.size[1] * k)), Image.LANCZOS)
+        k2 = PHOTO_PX_PER_CM * 110 / max(img.size)
+        if k2 < 0.95:
+            img = img.resize((round(img.size[0] * k2), round(img.size[1] * k2)), Image.LANCZOS)
     img = img.convert('RGB')
+    if rot == 'cw':    img = img.transpose(Image.ROTATE_270)
+    elif rot == 'ccw': img = img.transpose(Image.ROTATE_90)
     w, h = img.size
-    per_cm = h / (PHOTO_BOT_CM - PHOTO_TOP_CM)
-    r0 = int(round((DEPTH_TOP - PHOTO_TOP_CM) * per_cm))
-    r1 = int(round((DEPTH_BOT - PHOTO_TOP_CM) * per_cm))
+    top_cm, bot_cm = PHOTO_TOP_CM, PHOTO_BOT_CM
+    if AUTO_CALIBRATE:
+        cal = ruler_calibration(np.asarray(img.convert('L')).astype(float))
+        if cal:
+            top_cm, bot_cm = cal
+            print(f"   ruler found: image edges at {top_cm:.2f} cm (top) and {bot_cm:.2f} cm (bottom)")
+        else:
+            print(f"   !!! ruler not found - using PHOTO_TOP_CM / PHOTO_BOT_CM = "
+                  f"{top_cm} / {bot_cm} cm. Check the photo against the depth axis!")
+    per_cm = h / (bot_cm - top_cm)
+    width_cm = w / per_cm * SCALE
+    if width_cm > 25:
+        raise ValueError(f"the photo would be {width_cm:.0f} cm wide - its orientation "
+                         f"is wrong. Set PHOTO_ROTATE to 'cw', 'ccw' or None.")
+    r0 = int(round((DEPTH_TOP - top_cm) * per_cm))
+    r1 = int(round((DEPTH_BOT - top_cm) * per_cm))
     crop = np.asarray(img.crop((0, max(r0, 0), w, min(r1, h))))
-    print(f"   photo {os.path.basename(p)}: {w} x {h} px used, {per_cm:.1f} px/cm, "
-          f"true width {w / per_cm * SCALE:.2f} cm")
-    return dict(img=crop, top=PHOTO_TOP_CM + max(r0, 0) / per_cm,
-                bot=PHOTO_TOP_CM + min(r1, h) / per_cm, width_cm=w / per_cm * SCALE)
+    print(f"   photo used: {w} x {h} px, {per_cm:.1f} px/cm, true width {width_cm:.2f} cm")
+    return dict(img=crop, top=top_cm + max(r0, 0) / per_cm,
+                bot=top_cm + min(r1, h) / per_cm, width_cm=width_cm)
 
 def draw_photo(ax, ph):
     ax.imshow(ph['img'], extent=[0, 1, ph['bot'], ph['top']], aspect='auto',
@@ -298,7 +358,7 @@ except Exception as ex:
 try:
     from IPython.display import Image as Show, display
     for f in sorted(glob.glob(f'{OUT}/*_preview.png')):
-        print(os.path.basename(f)); display(Show(f, width=420))
+        print(os.path.basename(f)); display(Show(f, height=900))
 except Exception:
     pass
 zip_path = f'/content/{CORE}_realscale_PDFs.zip'
