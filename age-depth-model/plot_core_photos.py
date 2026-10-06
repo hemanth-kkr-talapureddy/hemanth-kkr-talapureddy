@@ -525,97 +525,181 @@ def _auto_ylim(columns, ystep):
     return np.ceil(hi / ystep) * ystep, np.floor(lo / ystep) * ystep
 
 
-def plot_core_photos(scales, events, out_path, cores=None, ylim=None, gap_cm=4.0,
-                     default_width_cm=7.0, ystep=5, fill_alpha=0.18, link_alpha=0.35,
-                     height_in=12, title=None, table=True, png_dpi="native",
-                     max_png_megapixels=400):
-    """Full photos side by side at true scale with the event layers.
+def sediment_tops(source, depth_col="in core"):
+    """{core: depth of the sediment top} = first counted depth of each core in the
+    varve workbook (first row of 'Depth (in core)'), where its adjusted depth is 0."""
+    import contextlib
+    with contextlib.redirect_stdout(io.StringIO()):
+        cores = read_cores(source, depth_col=depth_col)
+    return {c: float(df["depth"].iloc[0]) for c, df in cores.items()}
 
-    scales: from resolve_photo_depths(); events: from read_event_depths().
 
-    Resolution: in a PDF or SVG every photo is embedded at its ORIGINAL pixel
-    size (nothing resampled or cropped), and the event drawing stays vector -
-    best for editing in a design canvas. For a PNG, png_dpi="native" picks the
-    dpi that keeps the photos' own pixels per cm, limited to max_png_megapixels
-    (all 8 full-size cores side by side can be several hundred megapixels); a
-    number sets the dpi directly.
+def _ruler_on_left(img):
+    """True if the (upright) photo's ruler strip is on its left edge (the ruler is
+    the brightest strip along a long edge)."""
+    a = np.asarray(img.convert("L"), float)
+    w = a.shape[1]
+    k = max(2, int(w * 0.12))
+    return a[:, :k].mean() >= a[:, -k:].mean()
+
+
+def core_columns(scales, starts, cores, width_cm=None, depth_reference="sediment top"):
+    """Crop each photo for the figure and place it on the common depth scale.
+
+    - top: cut at the sediment top (`starts`, depth in core) - removes the foam;
+    - bottom: kept as photographed (colour card and label), for cross-checking;
+    - width: every core the same width (`width_cm`, default the narrowest photo),
+      trimmed from the side away from the ruler; nothing is stretched;
+    - depth_reference "sediment top": depth below the sediment top (= the
+      workbook's Depth (adjusted)); "in core": depth on the photo ruler.
+    Returns per-core dicts with the cropped image box (pixels of the upright
+    photo) and its exact depth extent.
+    """
+    widths = {}
+    for c in cores:
+        s = scales[c]
+        _, _, _, _, across = photo_geometry(s["file"], s["top_side"])
+        widths[c] = across / s["px_per_cm"]
+    W = width_cm or min(widths.values())
+    cols = {}
+    for c in cores:
+        s = scales[c]
+        ppc = s["px_per_cm"]
+        img = load_upright(s["file"], s["top_side"])
+        w, h = img.size
+        r0 = int(round((starts[c] - s["top"]) * ppc))           # first pixel row of sediment
+        r0 = min(max(r0, 0), h - 1)
+        n = min(w, int(round(W * ppc)))                          # same width for every core
+        x0 = 0 if _ruler_on_left(img) else w - n                 # keep the ruler side
+        shift = starts[c] if depth_reference == "sediment top" else 0.0
+        cols[c] = {"box": (x0, r0, x0 + n, h),
+                   "top": s["top"] + r0 / ppc - shift,            # exact depth of the cut
+                   "bottom": s["top"] + h / ppc - shift,
+                   # every column exactly W wide; the trimmed photo is n/ppc wide, which
+                   # differs from W by less than half a pixel (depth scale unchanged)
+                   "width": W, "width_photo": n / ppc, "shift": shift, "px_per_cm": ppc}
+    return cols, W
+
+
+def plot_core_photos(scales, events, out_path, starts, cores=None, depth_reference="sediment top",
+                     width_cm=None, ylim=None, gap_cm=4.0, ystep=5, fontsize=24,
+                     in_per_cm=0.3, link_alpha=0.35, line_width=2.5, title=None, table=True,
+                     png_dpi="native", max_png_megapixels=400):
+    """Core photos side by side on one common depth scale, with the event layers.
+
+    scales: from resolve_photo_depths(); events: from read_event_depths() with
+    depths in core (on the photo rulers); starts: {core: sediment-top depth in
+    core}, e.g. from sediment_tops(workbook).
+
+    Each photo is cut at its sediment top (the foam is removed), the bottom is
+    kept, and every core has the same width; nothing is stretched. Events keep
+    one shade each: the photo stays in its natural colours with the event top
+    and base drawn as lines in the event colour, and the same shade fills the
+    band to the next core with that event. All text and tick labels use
+    `fontsize`. In a PDF/SVG the photos are embedded at their original pixels.
     """
     vector = str(out_path).lower().endswith((".pdf", ".svg", ".eps"))
-    cores = cores or list(dict.fromkeys(list(scales) + [c for e in events for c in e["cores"]]))
-    columns, total_w = _layout(cores, scales, events, gap_cm, default_width_cm)
-    ylim = ylim or _auto_ylim(columns, ystep)
+    cores = [c for c in (cores or list(scales)) if c in scales]
+    cols, W = core_columns(scales, starts, cores, width_cm, depth_reference)
+    ev = [{"name": e["name"], "cores": {c: (y, t - cols[c]["shift"], b - cols[c]["shift"])
+                                        for c, (y, t, b) in e["cores"].items() if c in cols}}
+          for e in events]
+    x = 0.0
+    for c in cores:
+        cols[c]["x0"], cols[c]["x1"] = x, x + cols[c]["width"]
+        x += cols[c]["width"] + gap_cm
+    total_w = x - gap_cm
+    lo = min(cols[c]["top"] for c in cores)
+    hi = max(cols[c]["bottom"] for c in cores)
+    lo = 0.0 if lo > -0.05 else lo  # a cut within half a pixel of the sediment top = 0
+    ylim = ylim or (np.ceil(hi / ystep) * ystep, min(0.0, np.floor(lo / ystep) * ystep))
     span = max(ylim) - min(ylim)
-    fig_w = max(6.0, height_in * (total_w + 6) / span + 2.5)
-    fig, ax = plt.subplots(figsize=(fig_w, height_in))
+    plt.rcParams.update({"font.size": fontsize})
+    label_cm = fontsize / 72 / in_per_cm * 1.25                 # height of one label in cm
+    margin_cm = 6 * label_cm                                     # room for the event labels
+    fig_w = (total_w + margin_cm + 3) * in_per_cm + (12 if table and events else 2)
+    fig = plt.figure(figsize=(fig_w, span * in_per_cm + 6))
+    ax_w = (total_w + margin_cm + 3) * in_per_cm / fig_w
+    ax = fig.add_axes([3.0 / fig_w, 1.0 / (span * in_per_cm + 6), ax_w,
+                       span * in_per_cm / (span * in_per_cm + 6)])
 
-    for col in columns:
-        _draw_photo(ax, col, interpolation="none" if vector else "antialiased")
-        ax.text((col["x0"] + col["x1"]) / 2, min(ylim) - 0.012 * span, col["core"],
-                ha="left", va="bottom", rotation=40, rotation_mode="anchor", fontsize=9)
+    for c in cores:
+        col, s = cols[c], scales[c]
+        img = load_upright(s["file"], s["top_side"]).crop(col["box"])
+        ax.imshow(img, extent=(col["x0"], col["x1"], col["bottom"], col["top"]),
+                  interpolation="none" if vector else "antialiased", zorder=1)
+        ax.add_patch(Rectangle((col["x0"], col["top"]), col["x1"] - col["x0"],
+                               col["bottom"] - col["top"], facecolor="none", edgecolor="0.2",
+                               lw=1.0, zorder=4))
+        ax.text((col["x0"] + col["x1"]) / 2, min(ylim) - 0.6 * label_cm, c, ha="left",
+                va="bottom", rotation=40, rotation_mode="anchor", fontsize=fontsize)
 
-    by_core = {c["core"]: c for c in columns}
-    bar_w = min(0.9, gap_cm * 0.22)
     placed = []
-    for k, ev in enumerate(events):
-        color = event_color(ev["name"], k)
-        present = [c for c in cores if c in ev["cores"]]
-        for core in present:
-            col, (_, t, b) = by_core[core], ev["cores"][core]
-            ax.add_patch(Rectangle((col["x0"], t), col["x1"] - col["x0"], b - t,
-                                   facecolor=color, alpha=fill_alpha, edgecolor="none", zorder=2))
-            for d in (t, b):  # event top and base lines across the photo
-                ax.plot([col["x0"], col["x1"]], [d, d], color=color, lw=1.4, zorder=3)
-            ax.add_patch(Rectangle((col["x1"], t), bar_w, b - t, facecolor=color,
-                                   edgecolor="none", zorder=3))
-        # band linking the event to the next core that has it; a band that skips
-        # cores (event missing there) runs behind them, never over a photo
-        for c1, c2 in zip(present, present[1:]):
-            a, b_ = by_core[c1], by_core[c2]
-            (_, t1, s1), (_, t2, s2) = ev["cores"][c1], ev["cores"][c2]
+    for k, e in enumerate(ev):
+        color = event_color(e["name"], k)
+        present = [c for c in cores if c in e["cores"]]
+        for c in present:  # top and base of the event on the photo, in its colour
+            col, (_, t, b) = cols[c], e["cores"][c]
+            for d in (t, b):
+                ax.plot([col["x0"], col["x1"]], [d, d], color=color, lw=line_width,
+                        solid_capstyle="butt", zorder=3)
+        for c1, c2 in zip(present, present[1:]):  # same shade between the cores
+            a, b_ = cols[c1], cols[c2]
+            (_, t1, s1), (_, t2, s2) = e["cores"][c1], e["cores"][c2]
             adjacent = cores.index(c2) - cores.index(c1) == 1
-            ax.add_patch(Polygon([(a["x1"] + bar_w, t1), (b_["x0"], t2), (b_["x0"], s2),
-                                  (a["x1"] + bar_w, s1)], closed=True, facecolor=color,
-                                 alpha=link_alpha if adjacent else link_alpha * 0.6,
-                                 edgecolor=color, lw=0.5, zorder=2 if adjacent else 0.5))
+            ax.add_patch(Polygon([(a["x1"], t1), (b_["x0"], t2), (b_["x0"], s2), (a["x1"], s1)],
+                                 closed=True, facecolor=color, alpha=link_alpha, edgecolor=color,
+                                 lw=1.0, zorder=2 if adjacent else 0.5))
         if present:  # label right of the last core with this event, nudged if crowded
-            col, (_, t, b) = by_core[present[-1]], ev["cores"][present[-1]]
-            lx, ly = col["x1"] + bar_w + 0.4, (t + b) / 2
-            while any(abs(lx - px) < 3 and abs(ly - py) < 0.018 * span for px, py in placed):
-                ly += 0.018 * span
+            col, (_, t, b) = cols[present[-1]], e["cores"][present[-1]]
+            y0 = (t + b) / 2
+            lx, ly = col["x1"] + 0.6, y0
+            while any(abs(lx - px) < 3 * label_cm and abs(ly - py) < label_cm for px, py in placed):
+                ly += label_cm
             placed.append((lx, ly))
-            if ly != (t + b) / 2:
-                ax.plot([col["x1"] + bar_w, lx], [(t + b) / 2, ly], color="0.4", lw=0.5, zorder=4)
-            ax.text(lx, ly, ev["name"], fontsize=7.5, fontweight="bold", va="center",
-                    color="0.15", zorder=5, clip_on=False,
-                    bbox=dict(facecolor=color, edgecolor="none", alpha=0.45, pad=0.6))
+            if ly != y0:
+                ax.plot([col["x1"], lx], [y0, ly], color="0.4", lw=0.8, zorder=4)
+            ax.text(lx, ly, e["name"], fontsize=fontsize, fontweight="bold", va="center",
+                    color="0.1", zorder=5, clip_on=False,
+                    bbox=dict(facecolor=color, alpha=link_alpha, edgecolor=color, pad=2))
 
-    ax.set_xlim(-1.5, total_w + 5)
-    _depth_axis(ax, ylim, ystep)
-    ax.grid(axis="y", color="0.88", lw=0.5)
+    ax.set_xlim(-1.0, total_w + margin_cm)
+    ax.set_ylim(max(ylim), min(ylim))
+    ax.set_aspect("equal")  # 1 cm across = 1 cm down, the same for every core
+    ax.set_yticks(np.arange(min(ylim), max(ylim) + ystep / 2, ystep))
+    ax.tick_params(axis="y", labelsize=fontsize, length=8, width=1.2)
+    ax.set_ylabel("Depth below sediment top (cm)" if depth_reference == "sediment top"
+                  else "Depth in core (cm)", fontsize=fontsize)
+    ax.set_xticks([])
+    for side in ("top", "right", "bottom"):
+        ax.spines[side].set_visible(False)
+    ax.grid(axis="y", color="0.88", lw=0.8)
     ax.set_axisbelow(True)
     if table and events:  # same event table and colours as the age-depth figure
-        fig.canvas.draw()
         pos = ax.get_position()
-        tax = fig.add_axes([pos.x1 + 0.01, pos.y0 + 0.35 * pos.height, 0.22, 0.65 * pos.height])
-        all_cores = list(dict.fromkeys(c for e in events for c in e["cores"]))  # whole workbook
-        _event_table(tax, events, all_cores, depth_label="Depth in\ncore (cm)")
+        tax = fig.add_axes([pos.x1 + 0.01, pos.y0 + 0.2 * pos.height, 1 - pos.x1 - 0.02,
+                            0.8 * pos.height])
+        all_cores = list(dict.fromkeys(c for e in events for c in e["cores"]))
+        _event_table(tax, ev if depth_reference == "sediment top" else events, all_cores,
+                     depth_label=("Depth below\nsed. top (cm)" if depth_reference == "sediment top"
+                                  else "Depth in\ncore (cm)"),
+                     fontsize=fontsize, row_scale=2.2)
     if title:
-        ax.set_title(title, fontsize=13, pad=60)
+        ax.set_title(title, fontsize=fontsize, pad=6 * fontsize)
     dpi = 300
     if not vector:
-        fig.canvas.draw()
-        in_per_cm = ax.get_window_extent().height / fig.dpi / span
-        ppc_max = max((c["scale"]["px_per_cm"] for c in columns if c["scale"]), default=0)
+        ppc_max = max(cols[c]["px_per_cm"] for c in cores)
         cap = np.sqrt(max_png_megapixels * 1e6 / (fig.get_figwidth() * fig.get_figheight()))
-        dpi = (min(ppc_max / in_per_cm, cap) if png_dpi == "native" else float(png_dpi)) if ppc_max else 300
-        dpi = max(dpi, 150)
+        dpi = min(ppc_max / in_per_cm, cap) if png_dpi == "native" else float(png_dpi)
+        dpi = max(dpi, 100)
         kept = dpi * in_per_cm
-        print(f"PNG at {dpi:.0f} dpi = {kept:.1f} px per cm of core "
-              f"(photos have up to {ppc_max:.1f} px/cm"
-              + (")" if kept >= ppc_max - 0.5 else "; use the PDF/SVG for full resolution)"))
+        print(f"PNG at {dpi:.0f} dpi = {kept:.1f} px per cm of core (photos have up to "
+              f"{ppc_max:.1f} px/cm" + (")" if kept >= ppc_max - 0.5 else
+                                       "; use the PDF/SVG for full resolution)"))
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
-    print(f"Saved {out_path}")
-    return fig
+    plt.rcParams.update({"font.size": 10})
+    print(f"Saved {out_path}  (all cores {W:.2f} cm wide; depth = {depth_reference})")
+    return fig, cols
 
 
 def plot_scale_check(scales, events, out_path, cores=None, spec=None, height_in=14):
@@ -676,6 +760,10 @@ def main():
     p.add_argument("--ylim", nargs=2, type=float, metavar=("MAX_DEPTH", "MIN_DEPTH"))
     p.add_argument("--cores", nargs="+", help="Cores to plot, in order")
     p.add_argument("--check", help="Also save the scale-check figure to this file")
+    p.add_argument("--depth-reference", choices=["sediment top", "in core"], default="sediment top",
+                   help="Depth axis: below each core's sediment top (default; = Depth (adjusted)) "
+                        "or as read on the photo ruler")
+    p.add_argument("--fontsize", type=float, default=24)
     p.add_argument("--title")
     p.add_argument("-o", "--out", default="core_photos_events.png")
     args = p.parse_args()
@@ -689,7 +777,9 @@ def main():
     print(summary.to_string(index=False))
     if args.check:
         plot_scale_check(scales, events, args.check, cores=cores, spec=spec)
-    plot_core_photos(scales, events, Path(args.out), cores=cores, ylim=args.ylim,
+    starts = sediment_tops(args.events)  # first counted depth of each core (in core)
+    plot_core_photos(scales, events, Path(args.out), starts, cores=cores, ylim=args.ylim,
+                     depth_reference=args.depth_reference, fontsize=args.fontsize,
                      title=args.title)
 
 

@@ -333,7 +333,7 @@ def plot_age_depth(cores, out_path, xlim=None, ylim=None, style="line",
     return fig
 
 
-def _event_table(ax, events, cores, depth_label="Depth\n(cm)"):
+def _event_table(ax, events, cores, depth_label="Depth\n(cm)", fontsize=8, row_scale=0.85):
     """Table of each correlated event's age and depth range across the cores."""
     rows = []
     for ev in events:
@@ -347,8 +347,8 @@ def _event_table(ax, events, cores, depth_label="Depth\n(cm)"):
     table = ax.table(cellText=rows, colLabels=["Event", "Age\n(yr CE)", depth_label, "Cores"],
                      loc="upper center", cellLoc="center", colWidths=[0.2, 0.32, 0.32, 0.18])
     table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1, 0.85)
+    table.set_fontsize(fontsize)
+    table.scale(1, row_scale)
     for (r, c), cell in table.get_celld().items():
         cell.set_edgecolor("0.8")
         cell.set_linewidth(0.5)

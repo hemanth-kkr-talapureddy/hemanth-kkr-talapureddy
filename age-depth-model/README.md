@@ -103,6 +103,19 @@ without any depth scale is refused - it is never stretched to fit the counts.
 Always look at the **scale check** figure (`plot_scale_check`, or `--check`):
 red lines every 5 cm must run through the photo ruler's own numbers.
 
+## Layout of the photo figure
+
+- Each photo is cut at its **sediment top** - the first counted depth of the core in the
+  varve workbook (`Depth (in core)`) - so the foam is removed; the bottom (colour card,
+  label) is kept for cross-checking.
+- All cores share **one depth scale**: depth below the sediment top, which equals the
+  workbook's `Depth (adjusted)` (or `--depth-reference "in core"` for ruler depths).
+- Every core column has **exactly the same width** (the narrowest photo, trimmed from the
+  side away from the ruler; the horizontal fit is under half a pixel, depth is untouched).
+- Events keep **one shade**: the photo stays in natural colour, the event top and base are
+  lines in the event colour, and the same shade fills the band between cores.
+- All text, tick labels, event labels and the event table use **24 pt** (`--fontsize`).
+
 ## Resolution
 
 Photos are never cropped or shrunk. In the **PDF and SVG** every photo is
