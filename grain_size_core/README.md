@@ -1,10 +1,10 @@
 # GUAC-29A event grain-size panels (E2 flood, E3 earthquake)
 
-`python plot_event_grain_size.py` → `output/GUAC29A_E2_core_grain_size.{png,pdf,svg}` and `..._E3_...`
+Script: `GUAC29A_event_grain_size_colab.py` (works in Google Colab and plain Python).
 
-- The core photo is cropped on a true depth scale using a ruler calibration of 19.887 px/cm (max residual 0.74 mm).
-- Panels: mean grain size in µm (log2) and in φ, each with a ±1σ Folk–Ward sorting envelope, plus stacked class fractions (%).
-- Both figures share the same 9 cm depth span, the same x-axis limits, the same panel widths (set in inches) and 24 pt Liberation Sans. They are 575 pt tall, matching the cartoon PDFs.
-- `run_checks()` runs before plotting: it checks the ruler calibration, re-detects the ruler edges, checks the crop mapping and verifies that fractions sum to 100%. It also checks that µm and φ agree, and it checks the event depths and ages.
+**Colab:** upload the script and run `%run GUAC29A_event_grain_size_colab.py`. When asked, upload the grain-size CSV, the events Excel file and the original core photo. The figures are shown and downloaded as a zip.
+**Local:** `python GUAC29A_event_grain_size_colab.py` (it reads the inputs from `data/` and writes to `output/`).
 
-Requires: matplotlib, pandas, numpy, pillow, openpyxl.
+- Panels: core photo on a true depth scale, mean grain size (φ) with a ±1σ Folk–Ward sorting envelope, and class fractions (%).
+- Both figures share a 9 cm depth window, the same x-axis limits, the same panel widths and 24 pt Liberation Sans. They are 575 pt tall, matching the cartoon PDFs.
+- Built-in checks run before plotting. Depth error is ≤ 0.8 mm (under one photo pixel, 0.5 mm), which is ≥ 99 % of the 9 cm window. Grain-size values are plotted exactly as they appear in the CSV.
