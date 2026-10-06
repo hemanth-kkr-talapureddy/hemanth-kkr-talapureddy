@@ -40,6 +40,8 @@ UPLOAD = True                       # True = show the upload box first
 #               WHICH grain-size points belong to which event
 VARVE_FILE, VARVE_SHEET = 'varve counts', 'Events'
 GSD_EVENT_FILE = 'samples events'
+# fixed event depths (cm) that override BOTH files (band AND grain-size points)
+EVENT_OVERRIDE = {'GUAC-29A': {19: (82.5, 87.5)}}
 
 # one entry per core, in the order they are drawn (left -> right)
 #   stats  = words in the grain-size stats csv name
@@ -70,6 +72,12 @@ VARVE_BACKUP = {
              13: (67.15, 67.5), 14: (67.9, 68.3), 15: (70.8, 71.15), 16: (71.25, 71.5),
              17: (73.15, 75.4), 18: (76.65, 80.0), 19: (87.75, 87.75)},
 }
+# event ages (CE, ± 1 sigma) - used ONLY if the GSD event workbook is not found
+AGES_BACKUP = {1: (2010.5, 1.7), 2: (2000.1, 1.4), 3: (1977.9, 2.5), 4: (1966.1, 3.4),
+               5: (1962.0, 3.7), 6: (1960.6, 3.7), 7: (1960.6, 3.7), 8: (1931.5, 2.3),
+               9: (1921.0, 3.9), 10: (1902.1, 3.7), 11: (1895.6, 3.9), 12: (1893.8, 4.3),
+              13: (1886.7, 4.8), 14: (1881.3, 5.3), 15: (1861.9, 6.2), 16: (1859.9, 6.5),
+              17: (1845.3, 6.6), 18: (1836.7, 3.8), 19: (1820.6, 4.4), 20: (1795.5, 3.5)}
 # From Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
 GSD_BACKUP = {
  'GUAC-24A': {1: (11.5, 12.4), 2: (13.0, 17.2), 3: (19.6, 26.0), 4: (27.4, 28.0),
@@ -95,7 +103,7 @@ PHOTO_PX_PER_CM = 100     # photo reduced to this before drawing (fast)
 # event colours from your event table (8 colours, repeating every 8 events)
 BASE8 = ['#f6a362', '#2a9e8f', '#eac46b', '#6d8fae',
          '#e86f52', '#8ab27d', '#b5838f', '#9c8ab9']
-BAND_ALPHA, LINE_DARKEN = 0.45, 0.35  # bands as in the table; curves darker
+BAND_ALPHA, LINE_DARKEN = 0.45, 0.20  # bands as in the table; curves a bit darker
 
 # grain size
 CLAY_FINE_UM = 1.0        # clay class runs 3.9 -> 1 µm ("<1 µm removed")
@@ -106,7 +114,8 @@ FONT = 24                 # pt, ALL text and scale numbers
 SCALE = 1.0               # 1.0 = true size (1 cm core = 1 cm page)
 D_W_CM, SORT_W_CM = 8.0, 5.0     # width of the D10-D50-D90 and Sorting boxes
 GAP_CM = 0.8                     # gap between boxes
-LABEL_W_CM = 3.6                 # room for the E## labels right of Sorting
+LABEL_W_CM = 10.0                # room for 'E02  2000.1 ± 1.4' right of Sorting
+AGE_DX_CM = 3.2                  # distance from 'E02' to its age
 LEFT_CM = 3.4                    # room for each core's depth numbers + title
 MID_W_CM = 4.2                   # room for the common depth scale between cores
 TOP_CM, BOTTOM_CM = 7.0, 2.6     # room for titles/legend above, note below
@@ -161,6 +170,16 @@ def read_gsd_events():
         return GSD_BACKUP
     t = pd.read_excel(p) if p.lower().endswith(('.xlsx', '.xls')) else pd.read_csv(p)
     cols = list(t.columns)
+    # event ages: columns age_CE and age_unc, event names in the first 'event' column
+    c_age = next((c for c in cols if norm(c).startswith('agece')), None)
+    c_unc = next((c for c in cols if norm(c).startswith('ageunc')), None)
+    c_ev = next((c for c in cols if norm(c).startswith('event')), None)
+    if c_age and c_unc and c_ev:
+        for _, r in t.iterrows():
+            m = re.search(r'(\d+)', str(r[c_ev]))
+            a, u = pd.to_numeric(r[c_age], errors='coerce'), pd.to_numeric(r[c_unc], errors='coerce')
+            if m and np.isfinite(a) and np.isfinite(u):
+                AGES[int(m.group(1))] = (float(a), float(u))
     out = {}
     for core in CORES:
         tag = norm(core.split('-')[-1])                       # '24a'
@@ -223,6 +242,7 @@ def read_varve_events():
     return out
 
 print("\n1. events")
+AGES = dict(AGES_BACKUP)
 GSD_EV, VARVE_EV = read_gsd_events(), read_varve_events()
 EVENTS = {}          # depths used for bands / labels / photo bars
 for core in CORES:
@@ -238,7 +258,12 @@ for core in CORES:
             note = '  <- not in the varve file: band uses the GSD interval'
         if v is not None and g is not None and abs((v[0] + v[1]) - (g[0] + g[1])) / 2 > 2:
             note = '  <- CHECK: varve and GSD depths differ by more than 2 cm'
-        EVENTS[core][e] = v if v is not None else g
+        fix = EVENT_OVERRIDE.get(core, {}).get(e)
+        if fix:
+            note = f'  <- EVENT_OVERRIDE: {fix[0]}-{fix[1]} cm used for band and points'
+            g = fix
+            GSD_EV.setdefault(core, {})[e] = fix
+        EVENTS[core][e] = fix or (v if v is not None else g)
         f_ = lambda x: f"{x[0]:6.2f}-{x[1]:6.2f}" if x else '     absent  '
         print(f"            E{e:<3d}   {f_(VARVE_EV.get(core, {}).get(e))}        "
               f"{f_(g)}{note}")
@@ -442,7 +467,7 @@ FRAME = (min(s['window'][0] for s in CORES.values()),      # common depth frame
          max(s['window'][1] for s in CORES.values()))
 FRAME_H = (FRAME[1] - FRAME[0]) * SCALE
 LABEL_GAP = 0.95 / SCALE            # min. distance between E## labels (cm of core)
-STYLE = {'D10': ('o', ':'), 'D50': ('s', '-'), 'D90': ('^', '--')}
+STYLE = {'D10': ('o', ':'), 'D50': ('D', '-'), 'D90': ('^', '--')}
 CORE_W = LEFT_CM + PHOTO_W_CM + 2 * GAP_CM + D_W_CM + SORT_W_CM + GAP_CM + LABEL_W_CM
 os.makedirs(OUT, exist_ok=True)
 
@@ -478,10 +503,18 @@ def draw_data(ax, c, vars_):
             sv_ = s[s[v].notna()]
             if sv_.empty: continue
             mk, ls = STYLE.get(v, ('o', '-'))
-            ax.plot(sv_[v], sv_.depth, color=DARK[e], lw=2.0, ls=ls, marker=mk, ms=7,
-                    markeredgewidth=0, zorder=2)
-    for y in c['contacts']:
-        ax.axhline(y, color='0.25', lw=1.5, ls=(0, (4, 2)), zorder=3)
+            # as in your reference figure: line in the event colour, each point
+            # a coloured dot on a small light-grey square
+            ax.plot(sv_[v], sv_.depth, color=DARK[e], lw=2.0, ls=ls, zorder=3.5)
+            ax.plot(sv_[v], sv_.depth, ls='none', marker='s', ms=10, mfc='0.94',
+                    mec='0.55', mew=1.0, alpha=0.9, zorder=3)
+            ax.plot(sv_[v], sv_.depth, ls='none', marker=mk, ms=6, mfc=DARK[e],
+                    mec='0.15', mew=0.8, zorder=4)
+    # dashed line at the top and base of every event (as in the reference)
+    for e, t, b in c['ev']:
+        for y in (t, b):
+            if t0 <= y <= b0:
+                ax.axhline(y, color='0.35', lw=1.2, ls=(0, (4, 2)), zorder=1)
     if vars_[0].startswith('D'):
         ax.set_xlim(D_LIM[::-1] if PHI_COARSE_RIGHT else D_LIM)
         ax.xaxis.set_major_locator(MaxNLocator(5, steps=[1, 2, 5, 10]))
@@ -494,7 +527,8 @@ def draw_data(ax, c, vars_):
         ax.set_xlabel('Sorting (φ)')
     ax.xaxis.tick_top(); ax.xaxis.set_label_position('top')
     ax.tick_params(axis='x', which='both', top=True, bottom=False)
-    for sp in ('right', 'bottom'): ax.spines[sp].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.spines['right'].set_color('0.5')
 
 def spread(targets, gap, lo, hi):
     """Move label positions apart so they are at least `gap` apart, staying
@@ -523,8 +557,15 @@ def event_labels(fig, ax, c, x_right_cm, W):
         ax.plot([x_a, x_b], [y0, y], color=DARK[e], lw=1.5, clip_on=False,
                 transform=ax.get_yaxis_transform())
         star = '*' if len(c['seg'][e]) == 0 else ''
+        age = f'{AGES[e][0]:.1f} ± {AGES[e][1]:.1f}' if e in AGES else ''
         ax.text(x_t, y, f'E{e:02d}{star}', color=DARK[e], fontweight='bold',
                 va='center', ha='left', transform=ax.get_yaxis_transform(), clip_on=False)
+        ax.text(x_t + AGE_DX_CM / w_ax, y, age, color=DARK[e], fontweight='bold',
+                va='center', ha='left', transform=ax.get_yaxis_transform(), clip_on=False)
+    # column header at the height of the x-axis numbers
+    for x_, txt in ((x_t, 'Event'), (x_t + AGE_DX_CM / w_ax, 'Age (CE)')):
+        ax.text(x_, 1 + 0.35 / ((b0 - t0) * SCALE), txt, fontweight='bold', va='bottom',
+                ha='left', transform=ax.transAxes, clip_on=False)
 
 def place_core(fig, W, H, x, core, own_axis_label=True):
     """Draw one core starting at x (cm from the left page edge). The boxes of
@@ -551,8 +592,9 @@ def place_core(fig, W, H, x, core, own_axis_label=True):
     fig.text(axes[0].get_position().x0, (frame_top + 4.6) / H, core,
              fontweight='bold', va='bottom', ha='left')
     d_pos = axes[1].get_position()
-    fig.legend(handles=[Line2D([], [], color='0.25', lw=2.0, ms=7, marker=STYLE[v][0],
-                               ls=STYLE[v][1], label=v) for v in STYLE],
+    fig.legend(handles=[Line2D([], [], color='0.25', lw=2.0, ms=6, marker=STYLE[v][0],
+                               mfc='0.25', mec='0.15', ls=STYLE[v][1], label=v)
+                        for v in STYLE],
                loc='lower center', ncol=3, frameon=False, handlelength=1.4,
                handletextpad=0.3, columnspacing=0.6, borderaxespad=0,
                bbox_to_anchor=((d_pos.x0 + d_pos.x1) / 2, (frame_top + 3.1) / H))
@@ -577,7 +619,7 @@ def common_scale(fig, W, H, x):
 
 def legend_note(fig, W, H):
     fig.text(0.5 / W, 0.9 / H, "* event without grain-size samples (band only)   "
-             "- - - contact between two events   "
+             "- - - event top / base   "
              f"φ axis: {'coarser to the right' if PHI_COARSE_RIGHT else 'finer to the right'}",
              va='center', ha='left')
 
