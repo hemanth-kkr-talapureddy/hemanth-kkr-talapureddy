@@ -1,6 +1,7 @@
 # GUAC-29A event grain-size panels (E2 flood, E3 earthquake)
 
-Script: `GUAC29A_event_grain_size_colab.py` (works in Google Colab and plain Python).
+Notebook: `GUAC29A_event_grain_size_colab.ipynb` (Colab: open it, then Runtime → Run all, and upload the 3 files when asked).
+Script version: `GUAC29A_event_grain_size_colab.py` (same code).
 
 **Colab:** upload the script and run `%run GUAC29A_event_grain_size_colab.py`. When asked, upload the grain-size CSV, the events Excel file and the original core photo. The figures are shown and downloaded as a zip.
 **Local:** `python GUAC29A_event_grain_size_colab.py` (it reads the inputs from `data/` and writes to `output/`).
