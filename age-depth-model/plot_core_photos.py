@@ -581,9 +581,69 @@ def core_columns(scales, starts, cores, width_cm=None, depth_reference="sediment
     return cols, W
 
 
+def _tint(color, alpha):
+    """Solid colour equal to `color` at `alpha` over white (no transparency)."""
+    from matplotlib.colors import to_rgb
+    return tuple(1 - alpha * (1 - v) for v in to_rgb(color))
+
+
+def _gates(ev, cores, cols, gate_cm=0.35):
+    """Where each event's band passes cores that do not have the event.
+
+    In such a core the band becomes a thin gate placed right below the base of
+    the nearest event above it there. When several bands pass the same core
+    between the same two events, their gates are stacked in event order, so
+    they never sit on top of each other, and shrunk if the space is short.
+    Returns {(event index, core): (top, base)}.
+    """
+    passing = {}
+    for k, e in enumerate(ev):
+        p = [c for c in cores if c in e["cores"]]
+        for c1, c2 in zip(p, p[1:]):
+            for m in cores[cores.index(c1) + 1:cores.index(c2)]:
+                passing.setdefault(m, []).append(k)
+    gates = {}
+    for m, ks in passing.items():
+        groups = {}
+        for k in ks:  # group by the real events just above and below in core m
+            ja = max([j for j in range(k) if m in ev[j]["cores"]], default=None)
+            groups.setdefault(ja, []).append(k)
+        for ja, group in groups.items():
+            lo = ev[ja]["cores"][m][2] if ja is not None else cols[m]["top"]
+            below = [ev[j]["cores"][m][1] for j in range(group[-1] + 1, len(ev))
+                     if m in ev[j]["cores"] and ev[j]["cores"][m][1] > lo]
+            hi = min(below) if below else cols[m]["bottom"]
+            n = len(group)
+            pad = 0.1 * gate_cm
+            g = min(gate_cm, max(hi - lo - pad * (n + 1), 0.0) / n)
+            if ja is None:  # nothing above: stack upwards from the next deeper event
+                lo = hi - n * (g + pad) - pad
+            for i, k in enumerate(sorted(group)):
+                t = lo + pad + i * (g + pad)
+                gates[(k, m)] = (t, t + g)
+    return gates
+
+
+def _link_polygon(k, ev, c1, c2, cores, cols, gates):
+    """Band of event ev[k] from core c1 to core c2 (the next core that has it):
+    straight between neighbouring cores; through cores without the event it
+    follows the thin gates from _gates(), right below the event above."""
+    e = ev[k]
+    top_pts = [(cols[c1]["x1"], e["cores"][c1][1])]
+    bot_pts = [(cols[c1]["x1"], e["cores"][c1][2])]
+    for m in cores[cores.index(c1) + 1:cores.index(c2)]:
+        t, b = gates[(k, m)]
+        for x in (cols[m]["x0"], cols[m]["x1"]):
+            top_pts.append((x, t)); bot_pts.append((x, b))
+    top_pts.append((cols[c2]["x0"], e["cores"][c2][1]))
+    bot_pts.append((cols[c2]["x0"], e["cores"][c2][2]))
+    return top_pts + bot_pts[::-1]
+
+
 def plot_core_photos(scales, events, out_path, starts, cores=None, depth_reference="sediment top",
                      width_cm=None, ylim=None, gap_cm=4.0, ystep=5, fontsize=24,
-                     in_per_cm=0.3, link_alpha=0.35, line_width=2.5, title=None, table=True,
+                     in_per_cm=0.3, link_alpha=0.35, line_width=2.5, gate_cm=0.35,
+                     title=None, table=True,
                      png_dpi="native", max_png_megapixels=400):
     """Core photos side by side on one common depth scale, with the event layers.
 
@@ -635,6 +695,7 @@ def plot_core_photos(scales, events, out_path, starts, cores=None, depth_referen
                 va="bottom", rotation=40, rotation_mode="anchor", fontsize=fontsize)
 
     placed = []
+    gates = _gates(ev, cores, cols, gate_cm)
     for k, e in enumerate(ev):
         color = event_color(e["name"], k)
         present = [c for c in cores if c in e["cores"]]
@@ -643,13 +704,14 @@ def plot_core_photos(scales, events, out_path, starts, cores=None, depth_referen
             for d in (t, b):
                 ax.plot([col["x0"], col["x1"]], [d, d], color=color, lw=line_width,
                         solid_capstyle="butt", zorder=3)
-        for c1, c2 in zip(present, present[1:]):  # same shade between the cores
-            a, b_ = cols[c1], cols[c2]
-            (_, t1, s1), (_, t2, s2) = e["cores"][c1], e["cores"][c2]
+        tint = _tint(color, link_alpha)  # one solid shade: overlaps never mix colours
+        for c1, c2 in zip(present, present[1:]):
             adjacent = cores.index(c2) - cores.index(c1) == 1
-            ax.add_patch(Polygon([(a["x1"], t1), (b_["x0"], t2), (b_["x0"], s2), (a["x1"], s1)],
-                                 closed=True, facecolor=color, alpha=link_alpha, edgecolor=color,
-                                 lw=1.0, zorder=2 if adjacent else 0.5))
+            pts = _link_polygon(k, ev, c1, c2, cores, cols, gates)
+            # bands between neighbouring cores on top; bands that pass cores without the
+            # event go underneath, so they never cover another event's band or a photo
+            ax.add_patch(Polygon(pts, closed=True, facecolor=tint, edgecolor=color, lw=1.0,
+                                 zorder=2 if adjacent else 0.5))
         if present:  # label right of the last core with this event, nudged if crowded
             col, (_, t, b) = cols[present[-1]], e["cores"][present[-1]]
             y0 = (t + b) / 2
@@ -661,7 +723,7 @@ def plot_core_photos(scales, events, out_path, starts, cores=None, depth_referen
                 ax.plot([col["x1"], lx], [y0, ly], color="0.4", lw=0.8, zorder=4)
             ax.text(lx, ly, e["name"], fontsize=fontsize, fontweight="bold", va="center",
                     color="0.1", zorder=5, clip_on=False,
-                    bbox=dict(facecolor=color, alpha=link_alpha, edgecolor=color, pad=2))
+                    bbox=dict(facecolor=tint, edgecolor=color, pad=2))
 
     ax.set_xlim(-1.0, total_w + margin_cm)
     ax.set_ylim(max(ylim), min(ylim))
