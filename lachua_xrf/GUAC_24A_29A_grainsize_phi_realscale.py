@@ -13,7 +13,9 @@
 # Both cores use the SAME x-axis limits, the SAME panel widths and the SAME
 # font size (FONT = 24 pt for all text and scales). Every event of each core
 # is drawn as a coloured band, also the ones without grain-size samples
-# (their label gets a *).
+# (their label gets a *). Event bands = varve-count depths
+# (Lachua_Varve_counts.xlsx); grain-size points = the samples in each event's
+# GSD interval (Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx).
 # =============================================================================
 import os, re, glob, zipfile
 import numpy as np, pandas as pd
@@ -29,7 +31,15 @@ from matplotlib.lines import Line2D
 # ----------------------------------------------------------------------------
 FOLDER = '/content'                 # where your files are
 UPLOAD = True                       # True = show the upload box first
-EVENT_FILE = 'events'               # words in the event workbook name (xlsx/csv)
+# Two event files (words in their names):
+#  VARVE_FILE = event depths from the varve counting (sheet 'Events'): the
+#               CORRECT event depths -> used for the coloured bands, the bars
+#               next to the photo, the labels and the contact lines
+#  GSD_EVENT_FILE = event depths of the grain-size samples (wide table
+#               event | in_24A | 24A_top_cm | 24A_base_cm | ...): decides
+#               WHICH grain-size points belong to which event
+VARVE_FILE, VARVE_SHEET = 'varve counts', 'Events'
+GSD_EVENT_FILE = 'samples events'
 
 # one entry per core, in the order they are drawn (left -> right)
 #   stats  = words in the grain-size stats csv name
@@ -45,9 +55,23 @@ CORES = {
                   photo_top_cm=0.04, photo_bot_cm=100.55, keep=(0.0, 1.0)),
 }
 
-# event depths (cm) - used ONLY if the event workbook is not found.
-# Copied from Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
-EVENTS_BACKUP = {
+# event depths (cm) - used ONLY if the event files are not found.
+# From Lachua_Varve_counts.xlsx, sheet 'Events' (29A E19 is 87.75-87.75 there,
+# zero thickness, so its GSD interval is used instead)
+VARVE_BACKUP = {
+ 'GUAC-24A': {1: (11.75, 11.9), 2: (12.9, 17.4), 3: (19.35, 26.2), 4: (27.5, 27.85),
+              5: (28.35, 30.8), 6: (30.9, 33.0), 7: (33.0, 48.0), 8: (51.7, 53.0),
+             10: (55.7, 55.85), 11: (56.5, 62.0), 14: (63.5, 63.75), 15: (66.25, 66.5),
+             16: (66.7, 67.1), 17: (68.8, 69.75), 18: (70.15, 70.55), 19: (71.3, 72.7),
+             20: (75.2, 79.8)},
+ 'GUAC-29A': {1: (13.4, 14.1), 2: (15.1, 19.1), 3: (22.6, 30.15), 4: (31.3, 33.2),
+              5: (33.55, 36.8), 6: (36.8, 41.0), 7: (41.0, 49.1), 8: (53.25, 55.8),
+              9: (56.8, 58.1), 10: (60.2, 60.6), 11: (61.2, 64.1), 12: (64.65, 66.6),
+             13: (67.15, 67.5), 14: (67.9, 68.3), 15: (70.8, 71.15), 16: (71.25, 71.5),
+             17: (73.15, 75.4), 18: (76.65, 80.0), 19: (87.75, 87.75)},
+}
+# From Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
+GSD_BACKUP = {
  'GUAC-24A': {1: (11.5, 12.4), 2: (13.0, 17.2), 3: (19.6, 26.0), 4: (27.4, 28.0),
               5: (28.6, 30.6), 6: (30.6, 33.0), 7: (33.0, 47.8), 8: (51.6, 52.8),
              10: (55.6, 56.2), 11: (56.6, 61.6), 14: (63.4, 63.8), 15: (66.2, 66.5),
@@ -107,7 +131,7 @@ for a in ('x', 'y'):
 if UPLOAD:
     try:
         from google.colab import files
-        print("Upload: both stats csv files, the event workbook and both core photos.")
+        print("Upload: both stats csv files, BOTH event workbooks (varve counts + GSD samples) and both core photos.")
         files.upload()
     except Exception as ex:
         print("(no upload box:", ex, ")")
@@ -126,14 +150,15 @@ def find(spec, exts):
     return max(hits, key=os.path.getmtime) if hits else None
 
 # ----------------------------------------------------------------------------
-# 1. events: read from the workbook (wide layout: event | in_24A | 24A_top_cm |
-#    24A_base_cm | ... | event | in_29A | 29A_top_cm | 29A_base_cm | ...)
+# 1. events
 # ----------------------------------------------------------------------------
-def read_events():
-    p = find(EVENT_FILE, ('.xlsx', '.xls', '.csv'))
+def read_gsd_events():
+    """GSD event workbook, wide layout: event | in_24A | 24A_top_cm |
+    24A_base_cm | ... | event | in_29A | 29A_top_cm | 29A_base_cm | ..."""
+    p = find(GSD_EVENT_FILE, ('.xlsx', '.xls', '.csv'))
     if p is None:
-        print(f"\n1. no event file with '{EVENT_FILE}' in its name - using EVENTS_BACKUP")
-        return EVENTS_BACKUP
+        print(f"   !!! no file with '{GSD_EVENT_FILE}' in its name - using GSD_BACKUP")
+        return GSD_BACKUP
     t = pd.read_excel(p) if p.lower().endswith(('.xlsx', '.xls')) else pd.read_csv(p)
     cols = list(t.columns)
     out = {}
@@ -142,8 +167,8 @@ def read_events():
         top = next((c for c in cols if tag in norm(c) and 'top' in norm(c)), None)
         bas = next((c for c in cols if tag in norm(c) and ('base' in norm(c) or 'bot' in norm(c))), None)
         if top is None or bas is None:
-            print(f"   {core}: no top/base columns in the event file - using EVENTS_BACKUP")
-            out[core] = EVENTS_BACKUP[core]; continue
+            print(f"   {core}: no top/base columns in {os.path.basename(p)} - using GSD_BACKUP")
+            out[core] = GSD_BACKUP[core]; continue
         # event-name column = the nearest 'event' column left of the top column
         evc = [c for c in cols[:cols.index(top)] if norm(c).startswith('event')][-1]
         ev = {}
@@ -153,12 +178,70 @@ def read_events():
             if m and np.isfinite(a) and np.isfinite(b):
                 ev[int(m.group(1))] = (float(min(a, b)), float(max(a, b)))
         out[core] = ev
-    print(f"\n1. events read from {os.path.basename(p)}")
+    print(f"   GSD sample intervals from {os.path.basename(p)}")
     return out
 
-EVENTS = read_events()
-for core, ev in EVENTS.items():
-    print(f"   {core}: " + ", ".join(f"E{e} {t:g}-{b:g}" for e, (t, b) in sorted(ev.items())))
+def read_varve_events():
+    """Varve-count workbook, sheet 'Events': row 1 = core names
+    (GUAC-24A-1G-1 ...), row 2 = Year | Depth (in core) | Depth (adjusted),
+    then TWO rows per event (top, base) for E1, E2, E3 ... in order; an
+    empty pair = event absent in that core."""
+    p = find(VARVE_FILE, ('.xlsx', '.xls'))
+    if p is None:
+        print(f"   !!! no file with '{VARVE_FILE}' in its name - using VARVE_BACKUP")
+        return VARVE_BACKUP
+    xl = pd.ExcelFile(p)
+    sheet = next((n for n in xl.sheet_names if norm(n) == norm(VARVE_SHEET)), None)
+    if sheet is None:
+        print(f"   !!! no sheet '{VARVE_SHEET}' in {os.path.basename(p)} - using VARVE_BACKUP")
+        return VARVE_BACKUP
+    t = pd.read_excel(p, sheet_name=sheet, header=None)
+    # the event rows end at the first fully empty row block / the 'Lat' table
+    stop = next((i for i in range(2, len(t)) if norm(t.iat[i, 0]) == 'lat'), len(t))
+    dcols = {}
+    for core in CORES:
+        tag = norm(core.split('-')[-1])
+        j = next((j for j in range(t.shape[1]) if tag in norm(t.iat[0, j])), None)
+        dc = None if j is None else next((k for k in range(j, min(j + 3, t.shape[1]))
+                                          if 'incore' in norm(t.iat[1, k])), None)
+        dcols[core] = dc
+    num = t.iloc[2:stop].apply(pd.to_numeric, errors='coerce')
+    used = [c for c in dcols.values() if c is not None]
+    last = max(i for i in num.index if num.loc[i, used].notna().any())
+    out = {}
+    for core, dc in dcols.items():
+        if dc is None:
+            print(f"   {core}: not found in {os.path.basename(p)} - using VARVE_BACKUP")
+            out[core] = VARVE_BACKUP[core]; continue
+        ev = {}
+        for k, i in enumerate(range(2, last + 1, 2)):
+            a, b = num.at[i, dc], num.at[i + 1, dc] if i + 1 in num.index else np.nan
+            if np.isfinite(a) and np.isfinite(b):
+                ev[k + 1] = (float(min(a, b)), float(max(a, b)))
+        out[core] = ev
+    print(f"   event depths from {os.path.basename(p)}, sheet '{sheet}'")
+    return out
+
+print("\n1. events")
+GSD_EV, VARVE_EV = read_gsd_events(), read_varve_events()
+EVENTS = {}          # depths used for bands / labels / photo bars
+for core in CORES:
+    EVENTS[core] = {}
+    print(f"   {core}:   event   varve depth (band)   GSD interval (points)")
+    for e in sorted(set(VARVE_EV.get(core, {})) | set(GSD_EV.get(core, {}))):
+        v, g = VARVE_EV.get(core, {}).get(e), GSD_EV.get(core, {}).get(e)
+        note = ''
+        if v is not None and v[1] - v[0] < 0.05:              # zero thickness
+            note = '  <- varve depth has no thickness: band uses the GSD interval'
+            v = None
+        if v is None and g is not None and not note:
+            note = '  <- not in the varve file: band uses the GSD interval'
+        if v is not None and g is not None and abs((v[0] + v[1]) - (g[0] + g[1])) / 2 > 2:
+            note = '  <- CHECK: varve and GSD depths differ by more than 2 cm'
+        EVENTS[core][e] = v if v is not None else g
+        f_ = lambda x: f"{x[0]:6.2f}-{x[1]:6.2f}" if x else '     absent  '
+        print(f"            E{e:<3d}   {f_(VARVE_EV.get(core, {}).get(e))}        "
+              f"{f_(g)}{note}")
 
 COLOR = {e: BASE8[(e - 1) % 8] for e in range(1, 41)}
 DARK = {e: tuple(v * (1 - LINE_DARKEN) for v in mcolors.to_rgb(c)) for e, c in COLOR.items()}
@@ -233,7 +316,11 @@ for core, s in CORES.items():
                 key=lambda x: x[1])
     contacts = [(ev[i][2] + ev[i + 1][1]) / 2 for i in range(len(ev) - 1)
                 if abs(ev[i + 1][1] - ev[i][2]) <= CONTACT_TOL]
-    seg = {e: data[(data.depth >= t) & (data.depth <= b)] for e, t, b in ev}
+    # grain-size points of each event: the samples inside its GSD interval
+    # (from the GSD event file); the varve interval if it has none there
+    gi = {e: GSD_EV.get(core, {}).get(e, (t, b)) for e, t, b in ev}
+    seg = {e: data[(data.depth >= gi[e][0] - 1e-6) & (data.depth <= gi[e][1] + 1e-6)]
+           for e, t, b in ev}
     C[core] = dict(window=(t0, b0), data=data, ev=ev, contacts=contacts, seg=seg)
     print(f"      window {t0}-{b0} cm, {len(ev)} events: " +
           ", ".join(f"E{e} {len(seg[e])}" for e, _, _ in ev) + "  (samples)")
