@@ -20,7 +20,9 @@ Every figure (2 cores x E2/E3) shares:
   * 24 pt Liberation Sans for every label, tick and legend entry
   * a height of 575 pt (7.99 in), same as the cartoon PDFs
 
-Panels: core photo | mean grain size (phi) with mean +/- 1 sorting envelope | class fractions (%)
+Panels: core photo | mean grain size (phi): continuous line through the samples, with a
+        mean +/- 1 sorting envelope | class fractions (%), continuous
+Missing samples inside an event are filled by linear interpolation between neighbours.
 Before plotting, run_checks() tests the depth calibration and the data; any problem stops the script.
 """
 import glob
@@ -220,7 +222,8 @@ L_FRAC = L_PHI + PANEL_W + GAP
 L_LEG = L_FRAC + PANEL_W + 0.3
 FIG_W = L_LEG + 6.2
 XLABEL_Y = -0.115
-MARKER = 6
+MARKER = 9
+SHOW_SORTING = True   # False -> mean line only, without the sorting envelope
 
 PHI_LIM = (9.0, 2.0)           # inverted: coarser to the right
 PHI_TICKS = [9, 8, 7, 6, 5, 4, 3, 2]
@@ -281,21 +284,22 @@ def load_events(path, core):
     return ev.set_index("event")
 
 
-def steps(top, base, values):
-    """Step-plot arrays (each sample drawn over its own depth interval), NaN breaks at gaps."""
-    y, v = [], []
-    for i, (t, b, val) in enumerate(zip(top, base, values)):
-        if i and abs(t - base[i - 1]) > 0.05:
-            y.append(np.nan); v.append(np.nan)
-        y += [t, b]; v += [val, val]
-    return np.array(y), np.array(v)
+def profile(df, values):
+    """Continuous depth profile through the sample centres.
+
+    Values are held flat from the top of the first sample to its centre and from the
+    centre of the last sample to its base; between centres they are joined by straight
+    lines, so depths with no sample (e.g. GUAC-24A 14.4-14.8 cm) are filled by linear
+    interpolation between the neighbouring samples.
+    """
+    v = np.asarray(values, float)
+    y = np.r_[df.top.iloc[0], (df.top + df.base).values / 2, df.base.iloc[-1]]
+    return y, np.r_[v[0], v, v[-1]]
 
 
-def contiguous_runs(df):
-    run = [0]
-    for i in range(1, len(df)):
-        run.append(run[-1] + (abs(df.top.iloc[i] - df.base.iloc[i - 1]) > 0.05))
-    return [g for _, g in df.groupby(np.array(run))]
+def sample_gaps(df):
+    """(from_cm, to_cm) depth ranges between samples that were not measured."""
+    return [(b, t) for b, t in zip(df.base.values[:-1], df.top.values[1:]) if t - b > 0.05]
 
 
 # ------------------------------------------------------------------ plotting
@@ -335,6 +339,8 @@ def plot_event(core, code, gsd, events, img, cal):
     d1 = d0 + DEPTH_SPAN_CM
     mid = (gsd.top + gsd.base) / 2           # only samples belonging to this event
     sub = gsd[(mid >= ev.top - EVENT_TOL_CM) & (mid <= ev.base + EVENT_TOL_CM)]
+    for g0, g1 in sample_gaps(sub):
+        print(f"  {core} {code}: no samples {g0:.1f}-{g1:.1f} cm -> filled by interpolation")
     fig = plt.figure(figsize=(FIG_W, FIG_H))
 
     # core photo
@@ -347,15 +353,15 @@ def plot_event(core, code, gsd, events, img, cal):
     ax.set_xlabel(f"GUAC-{core}"); ax.xaxis.set_label_coords(0.5, XLABEL_Y)
     event_lines(ax, ev, color)
 
-    # mean (phi) with mean +/- 1 sorting envelope
+    # mean (phi): continuous line through the samples (style of the 24A reference figure)
     a = axes_at(fig, L_PHI, PANEL_W)
-    for g in contiguous_runs(sub):
-        y, lo = steps(g.top.values, g.base.values, (g.Mean_phi + g.Sorting_phi).values)
-        _, hi = steps(g.top.values, g.base.values, (g.Mean_phi - g.Sorting_phi).values)
+    centre = (sub.top + sub.base) / 2
+    if SHOW_SORTING:
+        y, lo = profile(sub, sub.Mean_phi + sub.Sorting_phi)
+        _, hi = profile(sub, sub.Mean_phi - sub.Sorting_phi)
         a.fill_betweenx(y, lo, hi, color=color, alpha=0.22, lw=0)
-    y, v = steps(sub.top.values, sub.base.values, sub.Mean_phi.values)
-    a.plot(v, y, color=INK, lw=3)
-    a.plot(sub.Mean_phi, (sub.top + sub.base) / 2, "o", ms=MARKER, color=INK)
+    a.plot(sub.Mean_phi, centre, "-", color=color, lw=3, zorder=6)
+    a.plot(sub.Mean_phi, centre, "o", ms=MARKER, mfc=color, mec=INK, mew=1.5, zorder=7)
     a.set_xlim(*PHI_LIM); depth_axis(a, d0, d1)
     a.set_xticks(PHI_TICKS)
     a.tick_params(labelleft=False)
@@ -363,15 +369,14 @@ def plot_event(core, code, gsd, events, img, cal):
     a.set_xlabel("Mean (φ)"); a.xaxis.set_label_coords(0.5, XLABEL_Y)
     event_lines(a, ev, color)
 
-    # stacked class fractions
+    # stacked class fractions, continuous (gaps between samples filled by interpolation)
     a = axes_at(fig, L_FRAC, PANEL_W)
-    for g in contiguous_runs(sub):
-        left = np.zeros(len(g))
-        for name, _, _, c in CLASSES:
-            y, v0 = steps(g.top.values, g.base.values, left)
-            _, v1 = steps(g.top.values, g.base.values, left + g[name].values)
-            a.fill_betweenx(y, v0, v1, color=c, lw=0)
-            left = left + g[name].values
+    left = np.zeros(len(sub))
+    for name, _, _, c in CLASSES:
+        y, v0 = profile(sub, left)
+        _, v1 = profile(sub, left + sub[name].values)
+        a.fill_betweenx(y, v0, v1, color=c, lw=0)
+        left = left + sub[name].values
     a.set_xlim(0, 100); depth_axis(a, d0, d1)
     a.set_xticks([0, 50, 100]); a.set_xticks([25, 75], minor=True)
     a.tick_params(labelleft=False)
@@ -381,9 +386,14 @@ def plot_event(core, code, gsd, events, img, cal):
     # legend: classes coarse -> fine, then envelope and event lines
     handles = [plt.Rectangle((0, 0), 1, 1, fc=c) for *_, c in CLASSES][::-1]
     labels = [f"{n}  ({p})" for n, _, p, _ in CLASSES][::-1]
-    handles += [plt.Rectangle((0, 0), 1, 1, fc=color, alpha=0.22),
-                plt.Line2D([], [], color=color, lw=2.5, ls="--")]
-    labels += ["Mean ± 1σ sorting", f"{code} top / base"]
+    handles.append(plt.Line2D([], [], color=color, lw=3, marker="o", ms=MARKER,
+                              mfc=color, mec=INK, mew=1.5))
+    labels.append("Mean grain size")
+    if SHOW_SORTING:
+        handles.append(plt.Rectangle((0, 0), 1, 1, fc=color, alpha=0.22))
+        labels.append("Mean ± 1σ sorting")
+    handles.append(plt.Line2D([], [], color=color, lw=2.5, ls="--"))
+    labels.append(f"{code} top / base")
     fig.legend(handles, labels, loc="upper left", frameon=False,
                bbox_to_anchor=(L_LEG / FIG_W, (BOTTOM + PLOT_H) / FIG_H),
                handlelength=1.2, handleheight=0.9, labelspacing=0.3, borderaxespad=0)
@@ -453,6 +463,16 @@ def run_checks(core, gsd, events, img, cal):
         assert (ev.top, ev.base) == exp[code], f"{core} {code}: {ev.top}-{ev.base} cm"
         d0 = WINDOWS[(core, code)]
         assert d0 <= ev.top and ev.base <= d0 + DEPTH_SPAN_CM, f"{core} {code} outside window"
+    # 5. continuous profiles: depth increasing, no holes, fractions still sum to 100 %
+    mid = (gsd.top + gsd.base) / 2
+    for code in ("E2", "E3"):
+        ev = events.loc[code]
+        sub = gsd[(mid >= ev.top - EVENT_TOL_CM) & (mid <= ev.base + EVENT_TOL_CM)]
+        y, _ = profile(sub, sub.Mean_phi)
+        assert np.all(np.diff(y) >= 0) and np.isfinite(y).all()
+        grid = np.linspace(y[0], y[-1], 500)
+        tot = sum(np.interp(grid, *profile(sub, sub[c[0]].values)) for c in CLASSES)
+        assert np.allclose(tot, 100, atol=0.01), f"{core} {code}: interpolated total != 100 %"
     assert events.loc["E2", "age"] == 2000.1 and events.loc["E3", "age"] == 1977.9
 
     max_mm = err_mm.max()

@@ -8,4 +8,4 @@
 - Depth checks run on every execution:
   - 29A uses the 10 cm ruler blocks: error ≤ 0.8 mm (99.1 %).
   - 24A uses 109 cm and half-cm ruler ticks in the image from the real-scale PDF: error ≤ 0.12 mm (99.9 %).
-- 24A sample labels are single depths of 2 mm slices and are drawn as depth ± 1 mm. The two replicates at 35.8 cm are averaged. Each figure plots only the samples that belong to its event.
+- 24A sample labels are single depths of 2 mm slices and are drawn as depth ± 1 mm. The two replicates at 35.8 cm are averaged. Each figure plots only the samples that belong to its event. The mean grain size is a continuous line through the samples, and fractions are continuous. Missing samples inside an event (24A E2, 14.3–14.9 cm) are filled by linear interpolation; set `SHOW_SORTING = False` to hide the ±1σ envelope.
