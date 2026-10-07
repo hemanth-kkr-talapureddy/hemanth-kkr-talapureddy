@@ -437,7 +437,19 @@ def depth_axis(ax, d0, d1):
 
 def event_lines(ax, ev, color):
     for z in (ev.top, ev.base):
-        ax.axhline(z, color=color, lw=2.5, ls="--", zorder=5)
+        ax.axhline(z, color=color, lw=2.5, ls="--", zorder=5, clip_on=False)
+
+
+def tint(color, alpha=0.22):
+    """Opaque colour that looks like `color` at `alpha` over white (no PDF transparency)."""
+    from matplotlib.colors import to_rgb
+    return tuple(1 - alpha * (1 - c) for c in to_rgb(color))
+
+
+def unclip(ax):
+    """Editable-PDF friendly: no clipping masks on the grid / tick lines of this axes."""
+    for line in ax.get_xgridlines() + ax.get_ygridlines():
+        line.set_clip_on(False)
 
 
 def plot_event(core, code, gsd, events, cal):
@@ -462,20 +474,27 @@ def plot_event(core, code, gsd, events, cal):
     event_lines(ax, ev, color)
 
     # mean (phi): continuous line through the samples (style of the 24A reference figure)
+    # Everything is drawn inside the axes limits without clipping masks, so each object stays
+    # a plain editable path in the PDF (Canvas X Draw, Illustrator, Inkscape).
     a = axes_at(fig, L_PHI, PANEL_W)
+    lo_x, hi_x = min(PHI_LIM), max(PHI_LIM)
     centre = (sub.top + sub.base) / 2
     if SHOW_SORTING:
         y, lo = profile(sub, sub.Mean_phi + sub.Sorting_phi)
         _, hi = profile(sub, sub.Mean_phi - sub.Sorting_phi)
-        a.fill_betweenx(y, lo, hi, color=color, alpha=0.22, lw=0)
-    a.plot(sub.Mean_phi, centre, "-", color=color, lw=3, zorder=6)
-    a.plot(sub.Mean_phi, centre, "o", ms=MARKER, mfc=color, mec=INK, mew=1.5, zorder=7)
+        a.fill_betweenx(y, np.clip(lo, lo_x, hi_x), np.clip(hi, lo_x, hi_x),
+                        color=tint(color), lw=0, clip_on=False, zorder=1)
+    x = np.clip(sub.Mean_phi, lo_x, hi_x)
+    a.plot(x, centre, "-", color=color, lw=3, zorder=6, clip_on=False)
+    a.plot(x, centre, "o", ms=MARKER, mfc=color, mec=INK, mew=1.5, zorder=7, clip_on=False)
     a.set_xlim(*PHI_LIM); depth_axis(a, d0, d1)
     a.set_xticks(PHI_TICKS)
     a.tick_params(labelleft=False)
-    a.grid(axis="x", color="#C8CDD3", lw=1)
+    a.set_axisbelow(False)
+    a.grid(axis="x", color="#C8CDD3", lw=1, zorder=2)
     a.set_xlabel("Mean (φ)"); a.xaxis.set_label_coords(0.5, XLABEL_Y)
     event_lines(a, ev, color)
+    unclip(a)
 
     # stacked class fractions, continuous (gaps between samples filled by interpolation)
     a = axes_at(fig, L_FRAC, PANEL_W)
@@ -483,7 +502,7 @@ def plot_event(core, code, gsd, events, cal):
     for name, _, _, c in CLASSES:
         y, v0 = profile(sub, left)
         _, v1 = profile(sub, left + sub[name].values)
-        a.fill_betweenx(y, v0, v1, color=c, lw=0)
+        a.fill_betweenx(y, np.clip(v0, 0, 100), np.clip(v1, 0, 100), color=c, lw=0, clip_on=False)
         left = left + sub[name].values
     a.set_xlim(0, 100); depth_axis(a, d0, d1)
     a.set_xticks([0, 50, 100]); a.set_xticks([25, 75], minor=True)
@@ -498,7 +517,7 @@ def plot_event(core, code, gsd, events, cal):
                               mfc=color, mec=INK, mew=1.5))
     labels.append("Mean grain size")
     if SHOW_SORTING:
-        handles.append(plt.Rectangle((0, 0), 1, 1, fc=color, alpha=0.22))
+        handles.append(plt.Rectangle((0, 0), 1, 1, fc=tint(color)))
         labels.append("Mean ± 1σ sorting")
     handles.append(plt.Line2D([], [], color=color, lw=2.5, ls="--"))
     labels.append(f"{code} top / base")
@@ -512,8 +531,8 @@ def plot_event(core, code, gsd, events, cal):
 
     OUT.mkdir(exist_ok=True)
     stem = OUT / f"GUAC{core}_{code}_core_grain_size_phi"
-    for ext_ in ("png", "pdf", "svg"):
-        fig.savefig(f"{stem}.{ext_}", dpi=300 if ext_ == "png" else None)
+    for ext_ in ("png", "pdf", "svg"):      # dpi=300 also sets the core-photo resolution in PDF/SVG
+        fig.savefig(f"{stem}.{ext_}", dpi=300)
     if IN_COLAB:
         plt.show()
     plt.close(fig)
