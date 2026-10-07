@@ -49,7 +49,7 @@ FILES = {
     "csv_24A": "GUAC_24A_GSD_Removedless1um_FolkWard_Stats.csv",
     "img_29A": "GUAC-29A-1G-1-W.jpg",          # core photo with the ruler
     "img_24A": "GUAC-24A-1G-1-W.jpg",          # core photo with the ruler (or GUAC-24A_realscale.pdf)
-    "events":  "Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx",   # event depths + ages
+    "events":  "Lachua_Varve_counts.xlsx",     # sheet with event, age_CE, age_unc, 24A/29A top/base (cm)
 }
 EVENTS_TO_PLOT = ["E2", "E3"]
 # Colab renames a re-uploaded file "name (1).csv"; such copies and "name_1.csv" are accepted too.
@@ -375,21 +375,40 @@ def load_gsd(path):
     return d
 
 
+def _key(name):
+    """Column-name key that ignores case, spaces, underscores and dots ('Age CE' == 'age_CE')."""
+    return re.sub(r"[\s_.\-]+", "", str(name)).lower()
+
+
 def load_events(path, core):
-    """Event depths in `core` and ages, from the sheet of the Excel file that has these columns."""
+    """Event depths in `core` and ages, from the sheet of the Excel file that has these columns.
+
+    Column names are matched ignoring case / spaces / underscores; the header may be in any of
+    the first 10 rows of the sheet.
+    """
     need = EVENT_COLS + [f"{core}_top_cm", f"{core}_base_cm"]
-    sheets = pd.read_excel(path, sheet_name=None)
-    for name, x in sheets.items():
-        x.columns = [str(c).strip() for c in x.columns]
-        if set(need) <= set(x.columns):
-            ev = pd.DataFrame({
-                "event": x["event"].astype(str).str.strip(), "age": x["age_CE"], "unc": x["age_unc"],
-                "top": pd.to_numeric(x[f"{core}_top_cm"], errors="coerce"),
-                "base": pd.to_numeric(x[f"{core}_base_cm"], errors="coerce"),
-            })
-            return ev.dropna(subset=["event"]).set_index("event")
-    found = {n: list(x.columns)[:12] for n, x in sheets.items()}
-    raise KeyError(f"{Path(path).name}: no sheet has the columns {need}. Sheets/columns found: {found}")
+    want = {_key(c): c for c in need}
+    seen = {}
+    for sheet, raw in pd.read_excel(path, sheet_name=None, header=None).items():
+        for h in range(min(10, len(raw))):
+            header = [_key(v) for v in raw.iloc[h]]
+            if set(want) <= set(header):
+                col = {want[k]: header.index(k) for k in want}       # first matching column
+                body = raw.iloc[h + 1:]
+                ev = pd.DataFrame({
+                    "event": body.iloc[:, col["event"]].astype(str).str.strip(),
+                    "age": pd.to_numeric(body.iloc[:, col["age_CE"]], errors="coerce"),
+                    "unc": pd.to_numeric(body.iloc[:, col["age_unc"]], errors="coerce"),
+                    "top": pd.to_numeric(body.iloc[:, col[f"{core}_top_cm"]], errors="coerce"),
+                    "base": pd.to_numeric(body.iloc[:, col[f"{core}_base_cm"]], errors="coerce"),
+                })
+                num = ev.event.str.extract(r"^\s*[Ee]\s*0*(\d+)", expand=False)   # E2, E02, E02*
+                ev = ev[num.notna()].assign(event="E" + num[num.notna()])
+                print(f"  events for {core}: sheet '{sheet}' of {Path(path).name}, {len(ev)} events")
+                return ev.set_index("event")
+        seen[sheet] = [str(v) for v in raw.iloc[0].tolist()][:15] if len(raw) else []
+    raise KeyError(f"{Path(path).name}: no sheet has the columns {need}. "
+                   f"Sheets and their first-row headers: {seen}")
 
 
 def profile(df, values):
