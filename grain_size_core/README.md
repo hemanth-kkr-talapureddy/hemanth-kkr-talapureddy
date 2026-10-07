@@ -1,7 +1,7 @@
 # GUAC-24A & GUAC-29A event grain-size panels (E2 flood, E3 earthquake)
 
-**Colab:** open `GUAC_event_grain_size_colab.ipynb`, then choose Runtime → Run all and upload the files when asked: the 29A CSV, the 24A CSV, the 29A core photo (e.g. `GUAC-29A-1G-1-W.jpg`) and the 24A core photo (`GUAC-24A-1G-1-W.jpg`) or `GUAC-24A_realscale.pdf`. The events Excel file is optional, because the event depths and ages are built in.
-**Local:** `python GUAC_event_grain_size_colab.py` reads `data/` and writes 4 figures to `output/`.
+**Colab:** open `GUAC_event_grain_size_colab.ipynb` and check the file names in the *Settings* cell. Then choose Runtime → Run all and upload those files when asked: the two GSD CSVs, `GUAC-29A-1G-1-W.jpg`, `GUAC-24A-1G-1-W.jpg` and `Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx`.
+Only these files are plotted. Event depths and ages come from the Excel file, and the depth scale comes from the ruler on each photo.
 
 - Panels: core photo on a true depth scale, mean grain size (φ) with a ±1σ Folk–Ward sorting envelope, and class fractions (%).
 - All 4 figures share a 9 cm depth window, the same x-axis limits, the same panel widths and 24 pt Liberation Sans. They are 575 pt tall, matching the cartoon PDFs.

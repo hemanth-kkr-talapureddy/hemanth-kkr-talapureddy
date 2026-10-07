@@ -4,15 +4,11 @@ GUAC-24A and GUAC-29A event panels: core photo on a true depth scale + grain siz
 Works in Google Colab or plain Python.
 
 HOW TO RUN IN GOOGLE COLAB
-  1. Upload this .py file to Colab (Files pane, left), or paste it all into one cell.
-  2. Run:   %run GUAC_event_grain_size_colab.py      (or just run the pasted cell)
-  3. When asked, upload these files together (names must contain 29A / 24A):
-       - GUAC_29A_GSD_..._FolkWard_Stats.csv        (29A grain-size stats)
-       - GUAC_24A_GSD_..._FolkWard_Stats.csv        (24A grain-size stats)
-       - GUAC-29A-1G-1-W.jpg                        (original 29A core photo with ruler)
-       - GUAC-24A-1G-1-W.jpg  or  GUAC-24A_realscale.pdf   (24A core image)
-       - optional: the events Excel file (event depths/ages are also built in)
-  4. Four figures are shown, saved to /content/output/ and downloaded as a zip.
+  1. Check the file names in the SETTINGS block below (they must match your files).
+  2. Run all cells. When asked, upload the files listed in SETTINGS.
+  3. Four figures are shown, saved to /content/output/ and downloaded as a zip.
+  Only the data in these files is plotted: event depths and ages come from the Excel file,
+  grain size from the two CSV files, depth scale from the ruler on each core photo.
 
 Every figure (2 cores x E2/E3) shares:
   * the same 9 cm depth window  -> identical cm-per-inch vertical scale
@@ -47,6 +43,17 @@ from matplotlib import font_manager
 WORK = Path("/content") if IN_COLAB else Path(__file__).resolve().parent
 OUT = WORK / "output"
 
+# ================================================================== SETTINGS: your file names
+FILES = {
+    "csv_29A": "GUAC_29A_GSD_Removedless1um_FolkWard_Stats.csv",
+    "csv_24A": "GUAC_24A_GSD_Removedless1um_FolkWard_Stats.csv",
+    "img_29A": "GUAC-29A-1G-1-W.jpg",          # core photo with the ruler
+    "img_24A": "GUAC-24A-1G-1-W.jpg",          # core photo with the ruler (or GUAC-24A_realscale.pdf)
+    "events":  "Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx",   # event depths + ages
+}
+EVENTS_TO_PLOT = ["E2", "E3"]
+# Colab renames a re-uploaded file "name (1).csv"; such copies and "name_1.csv" are accepted too.
+
 
 # ------------------------------------------------------------------ font (24 pt Liberation Sans)
 def ensure_font(name="Liberation Sans"):
@@ -76,119 +83,40 @@ INK = "#1F2D3A"
 
 
 # ------------------------------------------------------------------ input files
+def _resolve(name):
+    """Path of the file called `name` (or Colab's 'name (1).ext' / 'name_1.ext' copy), else None."""
+    stem, ext = Path(name).stem, Path(name).suffix
+    for root in (WORK, WORK / "data"):
+        exact = root / name
+        if exact.exists():
+            return exact
+        copies = sorted(glob.glob(str(root / f"{glob.escape(stem)} (*){ext}"))
+                        + glob.glob(str(root / f"{glob.escape(stem)}_[0-9]{ext}")))
+        if copies:
+            return Path(copies[-1])
+    return None
+
+
 def find_inputs():
-    """Return a dict of input paths; in Colab ask for an upload if any are missing.
-
-    Core images: the original photos (e.g. GUAC-24A-1G-1-W.jpg, GUAC-29A-1G-1-W.jpg) or,
-    for 24A, GUAC-24A_realscale.pdf. The events Excel file is optional: event depths and
-    ages are built in (EVENTS_BUILTIN) and an Excel file is used only if it has those columns.
-    """
-    def pick(patterns, test=None, avoid=None):
-        for root in (WORK, WORK / "data"):
-            for p in patterns:
-                for h in sorted(glob.glob(str(root / p))):
-                    name = Path(h).name.upper()
-                    if avoid and avoid in name:
-                        continue
-                    try:
-                        if test is None or test(Path(h)):
-                            return Path(h)
-                    except Exception:
-                        continue
-        return None
-
-    def is_core_photo(p):                         # long, narrow core photo
-        with Image.open(p) as im:
-            return max(im.size) > 5 * min(im.size)
-
-    def is_24a_pdf(p):
-        import pymupdf
-        with pymupdf.open(p) as d:
-            return any(h > 5000 for _, _, _, h, *_ in d[0].get_images(full=True))
-
-    def is_core_file(p):
-        return is_24a_pdf(p) if p.suffix.lower() == ".pdf" else is_core_photo(p)
-
-    photos = ["*{c}*.jp*g", "*{c}*.png", "*{c}*.tif*"]
-
-    def locate():
-        f = {
-            "csv_29A": pick(["*29A*GSD*.csv", "*29A*.csv"]),
-            "csv_24A": pick(["*24A*GSD*.csv", "*24A*.csv"]),
-            "img_29A": pick([q.format(c="29A") for q in photos], is_core_file, avoid="24A"),
-            "img_24A": pick(["*24A*realscale*.pdf", "*24A*.pdf"] + [q.format(c="24A") for q in photos],
-                            is_core_file, avoid="29A"),
-        }
-        # photo whose name does not say the core: use any core photo not taken yet
-        for core, other in (("29A", "24A"), ("24A", "29A")):
-            if f[f"img_{core}"] is None:
-                taken = {v for v in f.values() if v is not None}
-                f[f"img_{core}"] = pick([q.format(c="") for q in photos],
-                                        lambda p: p not in taken and is_core_photo(p), avoid=other)
-        return f
-
-    ensure_pymupdf()
-    found = locate()
+    """Paths of the files named in FILES; in Colab, ask for an upload of any that are missing."""
+    found = {k: _resolve(v) for k, v in FILES.items()}
     if None in found.values() and IN_COLAB:
         from google.colab import files
-        print("Upload: 29A CSV, 24A CSV, 29A core photo, 24A core photo (or GUAC-24A_realscale.pdf)"
-              " [+ events Excel, optional]")
+        print("Please upload:\n  " + "\n  ".join(FILES[k] for k, v in found.items() if v is None))
         files.upload()
-        found = locate()
-    missing = [k for k, v in found.items() if v is None]
+        found = {k: _resolve(v) for k, v in FILES.items()}
+    missing = [FILES[k] for k, v in found.items() if v is None]
     if missing:
-        raise FileNotFoundError(
-            f"missing input file(s): {missing}. File names must contain 29A / 24A, e.g. "
-            "GUAC_29A_GSD_..._Stats.csv, GUAC-29A-1G-1-W.jpg (put them next to this script)")
-    found["xlsx"] = find_events_xlsx()
+        raise FileNotFoundError(f"file(s) not found: {missing}. Upload them, or change the names "
+                                f"in FILES (SETTINGS block) to your file names.")
     for k, v in found.items():
-        print(f"{k:8s}: {v.name if v else 'not given -> built-in event table'}")
+        print(f"{k:8s}: {v.name}")
+    if any(found[k].suffix.lower() == ".pdf" for k in ("img_29A", "img_24A")):
+        ensure_pymupdf()
     return found
 
 
-EVENT_COLS = ["event", "age_CE", "age_unc", "24A_top_cm", "24A_base_cm", "29A_top_cm", "29A_base_cm"]
-EVENTS_BUILTIN = """event,age_CE,age_unc,24A_top_cm,24A_base_cm,29A_top_cm,29A_base_cm
-E1,2010.5,1.7,11.5,12.4,13.4,14.2
-E2,2000.1,1.4,13.0,17.2,15.1,19.1
-E3,1977.9,2.5,19.6,26.0,22.6,30.15
-E4,1966.1,3.4,27.4,28.0,31.3,33.2
-E5,1962.0,3.7,28.6,30.6,33.55,36.8
-E6,1960.6,3.7,30.6,33.0,36.8,41.0
-E7,1960.6,3.7,33.0,47.8,41.0,49.1
-E8,1931.5,2.3,51.6,52.8,53.25,55.8
-E9,1921.0,3.9,,,57.0,58.0
-E10,1902.1,3.7,55.6,56.2,60.0,60.6
-E11,1895.6,3.9,56.6,61.6,61.5,64.0
-E12,1893.8,4.3,,,65.0,66.5
-E13,1886.7,4.8,,,67.2,67.6
-E14,1881.3,5.3,63.4,63.8,67.9,68.3
-E15,1861.9,6.2,66.2,66.5,70.8,71.15
-E16,1859.9,6.5,66.5,66.9,71.25,71.5
-E17,1845.3,6.6,68.6,69.6,73.5,75.5
-E18,1836.7,3.8,70.2,70.6,77.0,80.0
-E19,1820.6,4.4,71.4,72.4,82.5,87.5
-E20,1795.5,3.5,75.2,79.6,,
-"""  # from Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
-
-
-def _events_sheet(path):
-    """First sheet of an Excel file that has the event columns, else None."""
-    try:
-        for _, df in pd.read_excel(path, sheet_name=None).items():
-            if set(EVENT_COLS) <= set(map(str, df.columns)):
-                return df
-    except Exception:
-        pass
-    return None
-
-
-def find_events_xlsx():
-    for root in (WORK, WORK / "data"):
-        for h in sorted(glob.glob(str(root / "*.xlsx"))):
-            if _events_sheet(h) is not None:
-                return Path(h)
-            print(f"  (ignored {Path(h).name}: no event table with columns {EVENT_COLS[3:]})")
-    return None
+EVENT_COLS = ["event", "age_CE", "age_unc"]
 
 
 def ensure_pymupdf():
@@ -407,10 +335,18 @@ CLASSES = [  # Folk-Ward classes, fine -> coarse (coarse sand, v. coarse sand, g
 ]
 
 EVENT_STYLE = {"E2": ("Flood-triggered", "#E39A3B"), "E3": ("Earthquake-triggered", "#3E7CA6")}
-WINDOWS = {  # top of the 9 cm window (cm) per core and event; each event sits inside its window
-    ("29A", "E2"): 12.6, ("29A", "E3"): 21.9,
-    ("24A", "E2"): 10.6, ("24A", "E3"): 18.3,
-}
+
+
+def window_top(ev, cal):
+    """Top (cm) of the DEPTH_SPAN_CM window: event centred, kept inside the photo."""
+    if ev.base - ev.top > DEPTH_SPAN_CM:
+        raise ValueError(f"event {ev.top}-{ev.base} cm is longer than DEPTH_SPAN_CM = {DEPTH_SPAN_CM}")
+    photo_top = px_to_cm(cal, 0)
+    photo_base = px_to_cm(cal, cal["arr"].shape[0])
+    d0 = round((ev.top + ev.base) / 2 - DEPTH_SPAN_CM / 2, 1)
+    d0 = max(d0, np.ceil(photo_top * 10) / 10)
+    d0 = min(d0, np.floor((photo_base - DEPTH_SPAN_CM) * 10) / 10)
+    return float(d0)
 EVENT_TOL_CM = 0.15  # sample centre may sit this far outside the event top/base (slice width)
 POINT_HALF_CM = 0.1  # 24A labels are single depths of 2 mm slices: drawn as depth +/- 1 mm
 
@@ -440,16 +376,20 @@ def load_gsd(path):
 
 
 def load_events(path, core):
-    import io
-    x = _events_sheet(path) if path else None
-    if x is None:
-        x = pd.read_csv(io.StringIO(EVENTS_BUILTIN))
-    ev = pd.DataFrame({
-        "event": x["event"].astype(str).str.strip(), "age": x["age_CE"], "unc": x["age_unc"],
-        "top": pd.to_numeric(x[f"{core}_top_cm"], errors="coerce"),
-        "base": pd.to_numeric(x[f"{core}_base_cm"], errors="coerce"),
-    })
-    return ev.set_index("event")
+    """Event depths in `core` and ages, from the sheet of the Excel file that has these columns."""
+    need = EVENT_COLS + [f"{core}_top_cm", f"{core}_base_cm"]
+    sheets = pd.read_excel(path, sheet_name=None)
+    for name, x in sheets.items():
+        x.columns = [str(c).strip() for c in x.columns]
+        if set(need) <= set(x.columns):
+            ev = pd.DataFrame({
+                "event": x["event"].astype(str).str.strip(), "age": x["age_CE"], "unc": x["age_unc"],
+                "top": pd.to_numeric(x[f"{core}_top_cm"], errors="coerce"),
+                "base": pd.to_numeric(x[f"{core}_base_cm"], errors="coerce"),
+            })
+            return ev.dropna(subset=["event"]).set_index("event")
+    found = {n: list(x.columns)[:12] for n, x in sheets.items()}
+    raise KeyError(f"{Path(path).name}: no sheet has the columns {need}. Sheets/columns found: {found}")
 
 
 def profile(df, values):
@@ -503,7 +443,7 @@ def event_lines(ax, ev, color):
 def plot_event(core, code, gsd, events, cal):
     title, color = EVENT_STYLE[code]
     ev = events.loc[code]
-    d0 = WINDOWS[(core, code)]
+    d0 = window_top(ev, cal)
     d1 = d0 + DEPTH_SPAN_CM
     mid = (gsd.top + gsd.base) / 2           # only samples belonging to this event
     sub = gsd[(mid >= ev.top - EVENT_TOL_CM) & (mid <= ev.base + EVENT_TOL_CM)]
@@ -582,43 +522,34 @@ def plot_event(core, code, gsd, events, cal):
 
 # ------------------------------------------------------------------ checks
 MAX_DEPTH_ERR_MM = 1.0   # run stops if any ruler mark is further than this from the fit
-EXPECTED = {  # from the events spreadsheet; the run stops if the file disagrees
-    "29A": {"n": 86, "E2": (15.1, 19.1), "E3": (22.6, 30.15)},
-    "24A": {"n": 231, "E2": (13.0, 17.2), "E3": (19.6, 26.0)},
-}
 
 
 def run_checks(core, gsd, events, cal):
     """Stop with an AssertionError if the calibration or the data are not right."""
-    exp = EXPECTED[core]
     # 1. depth calibration: fit residuals + independent check on the 10 cm block edges
     err_mm = np.r_[cal["fit_res_mm"], cal.get("block_err_mm", [])]
     what = cal["method"]
     assert err_mm.max() < MAX_DEPTH_ERR_MM, \
         f"{core}: ruler error too large: {err_mm.max():.2f} mm (limit {MAX_DEPTH_ERR_MM} mm)"
     # 2. crop maps back to the requested window (within 1 pixel)
-    for code in ("E2", "E3"):
-        d0 = WINDOWS[(core, code)]
+    for code in EVENTS_TO_PLOT:
+        assert code in events.index, f"{core}: event {code} not in the events file"
+        ev = events.loc[code]
+        assert np.isfinite(ev.top) and np.isfinite(ev.base), f"{core} {code}: no depths in the events file"
+        assert ev.top < ev.base, f"{core} {code}: top {ev.top} >= base {ev.base}"
+        d0 = window_top(ev, cal)
         _, ext = core_crop(cal, d0, d0 + DEPTH_SPAN_CM)
         px_cm = 1 / cal["px_per_cm"]
         assert abs(ext[3] - d0) < px_cm and abs(ext[2] - d0 - DEPTH_SPAN_CM) < px_cm
     # 3. grain-size data
-    assert len(gsd) == exp["n"], f"{core}: expected {exp['n']} samples, got {len(gsd)}"
     assert np.allclose(gsd[[c[0] for c in CLASSES]].sum(axis=1), 100, atol=0.01)
     assert np.allclose(1000 * 2.0 ** -gsd.Mean_phi, gsd.Mean_um, rtol=1e-6)
-    # 4. events
-    for code in ("E2", "E3"):
-        ev = events.loc[code]
-        assert ev.top < ev.base, f"{core} {code}: top {ev.top} >= base {ev.base}"
-        if (ev.top, ev.base) != exp[code]:
-            print(f"  NOTE {core} {code}: depths {ev.top}-{ev.base} cm differ from {exp[code]}")
-        d0 = WINDOWS[(core, code)]
-        assert d0 <= ev.top and ev.base <= d0 + DEPTH_SPAN_CM, f"{core} {code} outside window"
     # 5. continuous profiles: depth increasing, no holes, fractions still sum to 100 %
     mid = (gsd.top + gsd.base) / 2
-    for code in ("E2", "E3"):
+    for code in EVENTS_TO_PLOT:
         ev = events.loc[code]
         sub = gsd[(mid >= ev.top - EVENT_TOL_CM) & (mid <= ev.base + EVENT_TOL_CM)]
+        assert len(sub), f"{core} {code}: no grain-size samples between {ev.top} and {ev.base} cm"
         y, _ = profile(sub, sub.Mean_phi)
         assert np.all(np.diff(y) >= 0) and np.isfinite(y).all()
         grid = np.linspace(y[0], y[-1], 500)
@@ -644,16 +575,16 @@ def main():
     paths = find_inputs()
     for core in ("29A", "24A"):
         print()
-        gsd, events = load_gsd(paths[f"csv_{core}"]), load_events(paths["xlsx"], core)
+        gsd, events = load_gsd(paths[f"csv_{core}"]), load_events(paths["events"], core)
         img_path = paths[f"img_{core}"]
         if img_path.suffix.lower() == ".pdf":
             cal = calibrate_24A_pdf(image_from_pdf(img_path))
         else:
             cal = calibrate_photo(Image.open(img_path), core)
         run_checks(core, gsd, events, cal)
-        for code in ("E2", "E3"):
+        for code in EVENTS_TO_PLOT:
             stem, sub = plot_event(core, code, gsd, events, cal)
-            d0 = WINDOWS[(core, code)]
+            d0 = window_top(events.loc[code], cal)
             print(f"  {code}: {d0:.1f}-{d0 + DEPTH_SPAN_CM:.1f} cm, {len(sub)} samples, mean "
                   f"{sub.Mean_phi.max():.2f}-{sub.Mean_phi.min():.2f} φ -> {stem.name}.png/.pdf/.svg")
     if IN_COLAB:
