@@ -19,8 +19,8 @@ Working with the sediment record means most of my time goes to laser diffraction
 
 **Lab:** Malvern Mastersizer 3000, Malvern Xplorer, core logging and description
 **Analysis:** Python (pandas, numpy, matplotlib, scipy), Excel
-**Spatial:** QGIS, ArcGIS, drone-based mapping
-**Subsurface:** Petrel
+**Spatial:** QGIS, ArcGIS
+
 
 ## Repositories
 
