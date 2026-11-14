@@ -4,7 +4,7 @@ M.S. thesis student in Geology & Geophysics at Missouri University of Science an
 
 ## Research
 
-My thesis uses grain-size analysis of sediment cores from **Lake Lachuá, Guatemala** to distinguish flood-induced from earthquake-triggered turbidites — two event types that look similar in a core but mean very different things for hazard reconstruction in the tropics. Advised by Dr. Jonathan Obrist-Farner. Expected completion December 2026.
+My thesis uses grain-size analysis of sediment cores from **Lake Lachuá, Guatemala** to distinguish flood-induced from earthquake-triggered turbidites — two event types that look similar in a core but mean very different things for hazard reconstruction in the tropics. Advised by Dr. Jonathan Obrist-Farner. Expected completion May 2027.
 
 Working with the sediment record means most of my time goes to laser diffraction particle sizing, downcore statistical analysis, and the interpretive problem of turning distribution shapes into depositional processes.
 
