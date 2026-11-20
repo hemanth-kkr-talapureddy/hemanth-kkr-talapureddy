@@ -2,7 +2,8 @@
 # Lachua (GUAC-29A, GUAC-24A) - magnetic susceptibility (MSCL), poster style
 #
 # INPUT FILES (nothing is typed into this code):
-#   1. GUAC_MSCL-XYZ_rerun.csv              MSCL data of every GUAC core
+#   1. MSCL file (.csv or .xlsx), e.g. GUAC_MSCL-XYZ_rerun.csv or
+#      GUAC_MSCL_XYZ_24A-29A.xlsx           magnetic susceptibility
 #   2. Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
 #                                           event depths, ages, uncertainties
 #   3. Lachua_Varve_counts.xlsx             top and bottom depth of each core
@@ -54,6 +55,9 @@ MS_CORE_PREFIX = {'GUAC-29A': 'GUAC-29A-1G',  # start of 'Section' in the
 MS_SECTION_COL  = 'Section'
 MS_DEPTH_COL    = 'Section Depth'
 MS_COL          = 'Magnetic Susceptibility'
+# Unit of MS, used ONLY if the file has no units row. This value is the one
+# written in the units row of your GUAC_MSCL-XYZ_rerun.csv.
+MS_UNIT         = 'SI x 10^-5'
 VARVE_DEPTH_COL = 'Depth (in core)'
 
 MS_COLOR = '#2d3748'             # colour of the MS line
@@ -120,7 +124,7 @@ def ensure_files():
         return
     try:
         from google.colab import files
-        print('Upload 3 files: the MSCL .csv, the event table (.xlsx), '
+        print('Upload 3 files: the MSCL data (.csv or .xlsx), the event table (.xlsx), '
               'the varve counts (.xlsx)')
         for name, data in files.upload().items():
             with open(os.path.join(DATA_DIR, name), 'wb') as fh:
@@ -195,36 +199,83 @@ def read_core_range(path, core_id):
 # =============================================================================
 # STEP 3 - MAGNETIC SUSCEPTIBILITY OF ONE CORE FROM THE MSCL FILE
 # =============================================================================
-def read_ms(path, prefix):
-    """The MSCL csv has a header row, then a UNITS row (cm, mm, SI x 10^-5 ...),
-    then one row per measurement for every GUAC core. Keeps the rows whose
-    Section starts with `prefix`. Returns (DataFrame depth/ms, unit text)."""
-    units = pd.read_csv(path, header=None, nrows=2, encoding='utf-8-sig')
-    header = [str(v).strip() for v in units.iloc[0]]
-    for c in (MS_SECTION_COL, MS_DEPTH_COL, MS_COL):
-        if c not in header:
-            raise KeyError(f'{os.path.basename(path)} has no column "{c}"')
-    unit = str(units.iloc[1, header.index(MS_COL)]).strip()
+def _sheets(path):
+    """Every sheet of the file, read without assuming where the header is.
+    A .csv counts as one sheet; an .xlsx may have several."""
+    if path.lower().endswith(('.xlsx', '.xls')):
+        return pd.read_excel(path, sheet_name=None, header=None)
+    return {'csv': pd.read_csv(path, header=None, low_memory=False,
+                               encoding='utf-8-sig')}
 
-    df = pd.read_csv(path, skiprows=[1], low_memory=False, encoding='utf-8-sig')
-    df.columns = [str(c).strip() for c in df.columns]
-    s = df[df[MS_SECTION_COL].astype(str).str.startswith(prefix + '-')]
-    if s.empty:
-        raise ValueError(f'No rows for {prefix} in {os.path.basename(path)}')
-    sections = s[MS_SECTION_COL].unique().tolist()
-    if len(sections) != 1:
-        # several sections would need their depths joined end to end; stop
-        # rather than guess how they join
-        raise ValueError(f'{prefix} has {len(sections)} sections {sections}; '
-                         f'this script expects one section per core')
-    d = pd.DataFrame({'depth': pd.to_numeric(s[MS_DEPTH_COL], errors='coerce'),
-                      'ms': pd.to_numeric(s[MS_COL], errors='coerce')})
-    empty = d[d.ms.isna()]
+
+def read_ms(path, prefix):
+    """Magnetic susceptibility of one core from the MSCL file (.csv or .xlsx).
+    Works with these layouts, and stops with a message for anything else:
+      * a header row with 'Section', 'Section Depth', 'Magnetic Susceptibility'
+        (it may sit below a title row);
+      * with or without a UNITS row under it (cm, mm, SI x 10^-5 ...);
+      * all cores in one sheet (rows picked by 'Section'), or one sheet per
+        core named with the core tag (e.g. '24A') and no 'Section' column.
+    Returns (DataFrame depth/ms, unit text, where the data came from)."""
+    tag = prefix.split('-')[1]                          # 'GUAC-24A-1G' -> '24A'
+    found = []
+    for name, raw in _sheets(path).items():
+        raw = raw.dropna(how='all')
+        rows = [i for i in range(min(10, len(raw)))
+                if {MS_DEPTH_COL, MS_COL} <= {str(v).strip() for v in raw.iloc[i]}]
+        if not rows:
+            continue
+        h = rows[0]
+        cols = [str(v).strip() for v in raw.iloc[h]]
+        body = raw.iloc[h + 1:]
+        unit = None
+        # a units row has text (e.g. 'cm') where the depth number should be
+        first = body.iloc[0, cols.index(MS_DEPTH_COL)] if len(body) else None
+        if len(body) and pd.isna(pd.to_numeric(first, errors='coerce')) and not pd.isna(first):
+            u = body.iloc[0, cols.index(MS_COL)]
+            unit = None if pd.isna(u) else str(u).strip()
+            body = body.iloc[1:]
+        body = body.set_axis(cols, axis=1)
+        if MS_SECTION_COL in cols:
+            sec = body[MS_SECTION_COL].astype(str).str.strip()
+            body = body[(sec == prefix) | sec.str.startswith(prefix + '-')]
+            if body.empty:
+                continue
+            sections = body[MS_SECTION_COL].astype(str).str.strip().unique().tolist()
+            if len(sections) != 1:
+                # several sections would need their depths joined end to
+                # end; stop rather than guess how they join
+                raise ValueError(f'{prefix} has {len(sections)} sections {sections}; '
+                                 f'this script expects one section per core')
+            source = f'sheet "{name}", section {sections[0]}'
+        elif _norm(tag) in _norm(name):
+            source = f'sheet "{name}"'
+        else:
+            continue
+        found.append((body, unit, source))
+
+    if not found:
+        raise ValueError(f'No {prefix} data in {os.path.basename(path)}: no sheet has '
+                         f'the columns "{MS_DEPTH_COL}" and "{MS_COL}" with {prefix} '
+                         f'in "{MS_SECTION_COL}" or "{tag}" in the sheet name')
+    if len(found) > 1:
+        raise ValueError(f'{prefix} found in more than one place: '
+                         f'{[f[2] for f in found]}; keep only one in the file')
+    body, unit, source = found[0]
+    if unit is None:
+        unit = MS_UNIT
+        print(f'   {prefix}: no units row in the file; using MS_UNIT = "{MS_UNIT}"')
+
+    d = pd.DataFrame({'depth': pd.to_numeric(body[MS_DEPTH_COL], errors='coerce'),
+                      'ms': pd.to_numeric(body[MS_COL], errors='coerce')})
+    empty = d[d.ms.isna() & d.depth.notna()]
     if len(empty):
         print(f'   {prefix}: {len(empty)} depths without an MS value '
               f'({empty.depth.min():g}-{empty.depth.max():g} cm) are left out')
     d = d.dropna().sort_values('depth').reset_index(drop=True)
-    return d, unit, sections[0]
+    if d.depth.duplicated().any():
+        raise ValueError(f'{prefix}: the same depth appears more than once ({source})')
+    return d, unit, source
 
 
 # =============================================================================
@@ -362,7 +413,7 @@ def main():
         rng = read_core_range(varve_path, CORE_IDS[core])           # STEP 2
         ms, unit, section = read_ms(ms_path, MS_CORE_PREFIX[core])  # STEP 3
         d = ms[in_range(ms.depth, *rng)]
-        print(f'\n{core}\n   MSCL section : {section} ({os.path.basename(ms_path)})'
+        print(f'\n{core}\n   MS data      : {os.path.basename(ms_path)}, {section}'
               f'\n   depth axis   : {rng[0]:g}-{rng[1]:g} cm (varve file)'
               f'\n   MS values    : {len(d)} inside the depth axis, '
               f'{d.ms.min():.3f} to {d.ms.max():.3f} {unit}')
