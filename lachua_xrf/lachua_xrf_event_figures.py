@@ -377,7 +377,7 @@ def draw_core(core, data, ev, panels, xlims, depth_range):
     for i, (ax, p) in enumerate(zip(axes, panels)):
         df = data[p['data']]
         for _, e in ev.iterrows():
-            color = EVENT_COLORS[e.event]
+            color = EVENT_COLORS[int(e.event)]
             ax.axhspan(e.top, e.base, color=color, alpha=BAND_ALPHA, lw=0, zorder=0)
             if not e[p['flag']]:
                 continue                                  # band only, no data
@@ -442,10 +442,10 @@ def draw_core(core, data, ev, panels, xlims, depth_range):
         if abs(y - mid) > 0.05:
             label_ax.plot([0.0, 0.05], [mid, y], color='0.4', lw=1.2,
                           transform=tr, clip_on=False)
-        label_ax.text(0.07, y, f'E{e.event:02d}  {e.age:.1f} ± {e.unc:.1f}',
-                      color=darker(EVENT_COLORS[e.event]), fontweight='bold',
+        label_ax.text(0.07, y, f'E{int(e.event):02d}  {e.age:.1f} ± {e.unc:.1f}',
+                      color=darker(EVENT_COLORS[int(e.event)]), fontweight='bold',
                       va='center', ha='left', transform=tr, clip_on=False,
-                      gid=f'E{e.event}')
+                      gid=f'E{int(e.event)}')
     label_ax.text(0.07, top, 'Event  Age (CE)', fontweight='bold', va='bottom',
                   ha='left', transform=label_ax.get_yaxis_transform())
 
