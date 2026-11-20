@@ -65,8 +65,8 @@ CORE_IDS = {'GUAC-29A': 'GUAC-29A-1G-1',      # core names as written in the
 # (cm) of the photo's first and last pixel row. The code stops until both are
 # filled in, so a photo is never placed at a guessed depth.
 PHOTOS = {
-    'GUAC-29A': dict(words=['29A'], top_cm=None, bottom_cm=None),
-    'GUAC-24A': dict(words=['24A'], top_cm=None, bottom_cm=None),
+    'GUAC-29A': dict(words=['29A'], top_cm=12.5, bottom_cm=88.0),
+    'GUAC-24A': dict(words=['24A'], top_cm=10.5, bottom_cm=81.0),
 }
 PHOTO_EXT = ('.jpg', '.jpeg', '.png', '.tif', '.tiff')
 PHOTO_MAX_ROWS = 6000            # very tall scans are reduced to this many rows
