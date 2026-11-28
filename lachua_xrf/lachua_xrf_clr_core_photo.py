@@ -68,12 +68,15 @@ DATA_DIR = '/content'            # where the input files are (Colab default)
 OUT_DIR  = '/content/figures'    # where the figures are written
 
 # Each file is found by WORDS in its name (case, '-', '_', spaces ignored).
+# A LIST OF WORD LISTS means: the first one that matches a file is used.
 FILE_WORDS = {
     'events':   ['Events', 'Ages'],
     'varves':   ['Varve', 'counts'],
     'carbon':   ['Obrist', 'results'],
-    'GUAC-29A': dict(xrf=['29A', 'RepoOG'], gs=['29A', 'FolkWard']),
-    'GUAC-24A': dict(xrf=['24A', 'RepoOG'], gs=['24A', 'FolkWard']),
+    'GUAC-29A': dict(xrf=['29A', 'RepoOG'],
+                     gs=[['29A', 'FolkWard'], ['29A', 'grain', 'size']]),
+    'GUAC-24A': dict(xrf=['24A', 'RepoOG'],
+                     gs=[['24A', 'FolkWard'], ['24A', 'grain', 'size']]),
 }
 CORE_IDS = {'GUAC-29A': 'GUAC-29A-1G-1',      # core names as written in the
             'GUAC-24A': 'GUAC-24A-1G-1'}      # varve and carbon files
@@ -199,7 +202,14 @@ def _norm(s):
 
 def find_file(words, ext=('.csv', '.xlsx', '.xls')):
     """The newest file in DATA_DIR with one of these extensions whose name
-    contains every word."""
+    contains every word. `words` may also be a list of word lists: they are
+    tried in order and the first that matches a file is used."""
+    if words and isinstance(words[0], (list, tuple)):
+        for one in words:
+            hit = find_file(one, ext)
+            if hit:
+                return hit
+        return None
     hits = [f for f in glob.glob(os.path.join(DATA_DIR, '*'))
             if f.lower().endswith(ext)
             and all(_norm(w) in _norm(os.path.basename(f)) for w in words)]
@@ -243,7 +253,7 @@ def ensure_files():
         return
     try:
         from google.colab import files
-        print('Upload: 2 XRF (.xlsx), 2 grain size (.csv), the carbon results, '
+        print('Upload: 2 XRF (.xlsx), 2 grain size (.csv or .xlsx), the carbon results, '
               'the event table, the varve counts, 2 core photos')
         for name, data in files.upload().items():
             with open(os.path.join(DATA_DIR, name), 'wb') as fh:
@@ -359,13 +369,32 @@ def read_xrf(path):
 # STEP 4 - GRAIN SIZE
 # =============================================================================
 def read_grain_size(path):
-    df = read_table(path)
-    for c in (GS_SAMPLE_COL, GS_MEAN_COL):
-        if c not in df.columns:
-            raise KeyError(f'{os.path.basename(path)} has no column "{c}"')
-    d = pd.DataFrame({'depth': df[GS_SAMPLE_COL].map(interval_depth),
-                      'phi': pd.to_numeric(df[GS_MEAN_COL], errors='coerce')}).dropna()
-    return d.groupby('depth', as_index=False).mean()    # repeat runs -> mean
+    """Mean grain size (phi) and sample depth, from a .csv or any sheet of an
+    .xlsx. The header row (with GS_SAMPLE_COL and GS_MEAN_COL) may sit below
+    title rows. If no sheet has both columns, the code stops and prints the
+    column names it found, so you can set GS_SAMPLE_COL / GS_MEAN_COL."""
+    if path.lower().endswith(('.xlsx', '.xls')):
+        sheets = pd.read_excel(path, sheet_name=None, header=None)
+    else:
+        sheets = {'csv': pd.read_csv(path, header=None, encoding='utf-8-sig')}
+    seen = {}
+    for name, raw in sheets.items():
+        raw = raw.dropna(how='all')
+        for i in range(min(15, len(raw))):
+            cols = [str(v).strip() for v in raw.iloc[i]]
+            if GS_SAMPLE_COL in cols and GS_MEAN_COL in cols:
+                body = raw.iloc[i + 1:].set_axis(cols, axis=1)
+                d = pd.DataFrame({
+                    'depth': body[GS_SAMPLE_COL].map(interval_depth),
+                    'phi': pd.to_numeric(body[GS_MEAN_COL], errors='coerce')}).dropna()
+                if len(d):
+                    print(f'   grain size read from sheet "{name}", header row {i + 1}')
+                    return d.groupby('depth', as_index=False).mean()  # repeats -> mean
+        seen[name] = [str(v).strip() for v in raw.iloc[0] if pd.notna(v)][:25] \
+            if len(raw) else []
+    raise KeyError(f'{os.path.basename(path)}: no sheet has the columns '
+                   f'"{GS_SAMPLE_COL}" and "{GS_MEAN_COL}". First row of each sheet: '
+                   f'{seen}. Set GS_SAMPLE_COL and GS_MEAN_COL in Cell 1 to your names.')
 
 
 # =============================================================================
