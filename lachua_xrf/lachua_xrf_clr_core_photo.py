@@ -1,43 +1,55 @@
 # =============================================================================
-# Lachua (GUAC-29A, GUAC-24A) - core photo + clr of every XRF element
+# Lachua (GUAC-29A, GUAC-24A) - core photo + mean grain size + clr of every
+# XRF element + carbon and nitrogen (29A)
 #
 # INPUT FILES (nothing is typed into this code):
 #   1. GUAC-29A-1G-1_RepoOG.xlsx            XRF counts, 29A
 #   2. GUAC-24A-1G-1_RepoOG.xlsx            XRF counts, 24A
-#   3. Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
+#   3. GUAC_29A_..._FolkWard_Stats.csv      grain-size statistics, 29A
+#   4. GUAC_24A_..._FolkWard_Stats_1.csv    grain-size statistics, 24A
+#   5. Obrist_Lachua_July_2026_All_results.xlsx
+#                                           carbon + nitrogen (29A samples)
+#   6. Lachua_Graine_Siza_Samples_N_Events_with_Ages.xlsx
 #                                           event depths, ages, uncertainties
-#   4. Lachua_Varve_counts.xlsx             top and bottom depth of each core
-#   5. core photo of 29A (.jpg / .png / .tif), with its ruler, as scanned
-#   6. core photo of 24A
-#   + for each photo, the ruler depth at its first and last pixel: PHOTOS below
+#   7. Lachua_Varve_counts.xlsx             top and bottom depth of each core
+#   8. core photo of 29A (.jpg / .png / .tif), with its ruler, as scanned
+#   9. core photo of 24A
 #
-# OUTPUT, for each core:
-#   <core>_photo_clr_events : photo | 10 clr panels, with event bands + ages
-#   <core>_photo_clr_lines  : photo | 10 clr panels, lines only
-#   <core>_photo_check      : the whole photo with the depth lines the code
-#                             uses drawn over it - they must sit on the ruler
+# OUTPUT, for each core (photo | grain size | 10 clr | carbon, if the core has
+# carbon data), in two line styles x two backgrounds:
+#   <core>_V7_continuous_events : one line through all samples, event bands
+#   <core>_V7_continuous_lines  : one line through all samples
+#   <core>_V7_gaps_events       : lines stop where samples are missing, bands
+#   <core>_V7_gaps_lines        : lines stop where samples are missing
+#   <core>_photo_check          : the photo with the depth lines the code uses
 #   saved as 300 dpi PNG + vector PDF
 #
 # THE RULES
-#   * clr over the same 10 elements as the event figures, so values match them
-#   * every XRF sample in the core is drawn: ONE continuous line per element
-#     from the top to the bottom of the core (no break at background or varves)
-#     with a dot at each sample (one XRF measurement every 5 mm)
-#   * the photo is turned upright if it was scanned lying down, placed by its
-#     ruler, and cut to the sediment (ruler and colour card removed)
+#   * a dot at every sample (XRF every 5 mm; grain size and carbon as sampled)
+#   * 'continuous': ONE line per panel from the first to the last sample
+#     'gaps'      : the line stops where a sample is missing (spacing more
+#                   than GAP_FACTOR x the usual spacing), so no line crosses
+#                   unsampled core
+#   * clr over the same 10 elements as the event figures
+#   * C/N is the ATOMIC ratio: (TOC / 12.011) / (N / 14.007)   (Meyers 1994)
 #   * depth axis of each core: first -> last 'Depth (in core)' in the varve file
-#   * ONE common depth scale, same panel widths, same x ranges, 24 pt text
+#   * ONE common depth scale, same panel widths, same x ranges in both cores,
+#     24 pt text
 #
 # THE STEPS (each is one function below, in this order):
 #   STEP 1  event file                  -> read_events()
 #   STEP 2  varve file: depth range     -> read_core_range()
 #   STEP 3  XRF: clr                    -> read_xrf()
-#   STEP 4  core photo                  -> read_photo()
-#   STEP 5  draw the figure             -> draw_core()
-#   STEP 6  check the drawn figure      -> check_figure()   (stops on any error)
+#   STEP 4  grain size                  -> read_grain_size()
+#   STEP 5  carbon + nitrogen           -> read_carbon()
+#   STEP 6  core photo                  -> read_photo()
+#   STEP 7  draw the figure             -> draw_core()
+#   STEP 8  check the drawn figure      -> check_figure()   (stops on any error)
 #
-# Reference
-#   clr: Bertrand et al. (2024) Earth-Sci. Rev. 249, 104639, Eqs. 1-2
+# References
+#   clr       : Bertrand et al. (2024) Earth-Sci. Rev. 249, 104639, Eqs. 1-2
+#   grain size: Folk & Ward (1957) J. Sediment. Petrol. 27, 3-26 (mean, phi)
+#   C/N       : Meyers (1994) Chem. Geol. 114, 289-302
 # =============================================================================
 import os, re, glob
 import numpy as np
@@ -59,11 +71,12 @@ OUT_DIR  = '/content/figures'    # where the figures are written
 FILE_WORDS = {
     'events':   ['Events', 'Ages'],
     'varves':   ['Varve', 'counts'],
-    'GUAC-29A': dict(xrf=['29A', 'RepoOG']),
-    'GUAC-24A': dict(xrf=['24A', 'RepoOG']),
+    'carbon':   ['Obrist', 'results'],
+    'GUAC-29A': dict(xrf=['29A', 'RepoOG'], gs=['29A', 'FolkWard']),
+    'GUAC-24A': dict(xrf=['24A', 'RepoOG'], gs=['24A', 'FolkWard']),
 }
 CORE_IDS = {'GUAC-29A': 'GUAC-29A-1G-1',      # core names as written in the
-            'GUAC-24A': 'GUAC-24A-1G-1'}      # varve file
+            'GUAC-24A': 'GUAC-24A-1G-1'}      # varve and carbon files
 
 # ---- CORE PHOTOS -------------------------------------------------------------
 # words    finds the photo file by name.
@@ -93,7 +106,12 @@ PHOTO_MAX_ROWS = 6000            # very tall scans are reduced to this many rows
 
 # Column names, exactly as written in your files.
 XRF_DEPTH_COL   = 'Section Depth (cm)'
+GS_SAMPLE_COL   = 'Sample'       # e.g. '15.5 - 16cm' (29A) or '13.0cm' (24A)
+GS_MEAN_COL     = 'Mean_phi'     # Folk & Ward graphic mean, in phi
 VARVE_DEPTH_COL = 'Depth (in core)'
+# Carbon file: a value column takes its sample names from the nearest of these
+# columns to its LEFT (your file has one sample column per measurement block).
+CARBON_SAMPLE_COLS = ('Sample ID', 'Name', 'Sample')
 
 # The 10 clr elements, in panel order, grouped as in your v2 notebook
 # (Bertrand et al. 2024): redox | lithogenic | authigenic.
@@ -107,13 +125,32 @@ CLR_ELEMENTS = [el for _, els in CLR_GROUPS for el in els]
 ELEMENT_COLORS = {'Si': '#4299e1', 'K': '#dd6b20', 'Ca': '#2b6cb0', 'Ti': '#2c7a7b',
                   'Mn': '#38a169', 'Fe': '#c05621', 'Sr': '#805ad5', 'Zr': '#b83280',
                   'S': '#975a16', 'Al': '#5a67d8'}
+GS_COLOR = '#4a5568'
+
+# Carbon and nitrogen panels: (key, column in your file, panel label, colour).
+# 'CN' has no column: it is calculated from TOC and N (atomic ratio).
+CARBON_PANELS = [
+    ('TC',    'wt %T',                     'TC\n(wt %)',             '#1a202c'),
+    ('TIC',   '% Inorganic Carbon',        'TIC\n(wt %)',            '#2b6cb0'),
+    ('TOC',   '%TOC by difference',        'TOC\n(wt %)',            '#276749'),
+    ('CaCO3', '%CaCO3',                    'CaCO$_3$\n(wt %)',       '#3182ce'),
+    ('N',     'wt %N',                     'N\n(wt %)',              '#9c4221'),
+    ('d15N',  'd15N (permil, vs AIR) raw', '$\\delta^{15}$N\n(‰ AIR)', '#6b46c1'),
+    ('CN',    None,                        'C/N\n(atomic)',          '#b7791f'),
+]
+C_ATOM, N_ATOM = 12.011, 14.007
+
+# ---- LINES -------------------------------------------------------------------
+JOIN_MODES = ('continuous', 'gaps')   # both versions are made
+GAP_FACTOR = 1.6                 # 'gaps': a gap = spacing > 1.6 x usual spacing
 
 # ---- SIZE --------------------------------------------------------------------
 FONT_PT       = 24               # ALL text and scale numbers
 DEPTH_SCALE   = 1.0              # cm on paper per 1 cm of core (same both cores)
 PHOTO_W_CM    = 5.0              # width of the photo column (same both cores)
-PANEL_W_CM    = 6.5              # width of every clr panel (same both cores)
+PANEL_W_CM    = 6.5              # width of every data panel (same both cores)
 PANEL_GAP_CM  = 1.2              # gap between panels
+MIN_LABEL_GAP_CM = 0.3           # least space between neighbouring panels' numbers
 LABEL_W_CM    = 11.0             # column for "E01  2010.5 ± 1.7" (events version)
 LEFT_CM       = 4.5              # room for the depth numbers + "Depth (cm)"
 TOP_CM        = 8.5              # room for title, group names, panel names
@@ -143,12 +180,13 @@ matplotlib.rcParams.update({
     'xtick.minor.size': 5, 'ytick.minor.size': 5,
     'xtick.major.pad': 6, 'ytick.major.pad': 6,
     'xtick.direction': 'out', 'ytick.direction': 'out',
-    'pdf.fonttype': 42, 'ps.fonttype': 42,      # PDF text stays editable
+    'mathtext.default': 'regular',               # math text in the same font
+    'pdf.fonttype': 42, 'ps.fonttype': 42,       # PDF text stays editable
     'axes.grid': False,
 })
-CM = 1 / 2.54                                   # cm -> inch
-LINE_W = 2.0                                    # data line width (pt)
-DOT_SIZE = 5.0                                  # sample dot diameter (pt)
+CM = 1 / 2.54                                    # cm -> inch
+LINE_W = 2.0                                     # data line width (pt)
+DOT_SIZE = 5.0                                   # sample dot diameter (pt)
 
 
 # =============================================================================
@@ -170,16 +208,18 @@ def find_file(words, ext=('.csv', '.xlsx', '.xls')):
 
 def needed():
     """(description, words, extensions) of every input file."""
-    out = [('event table', FILE_WORDS['events'], ('.xlsx', '.xls', '.csv')),
-           ('varve counts', FILE_WORDS['varves'], ('.xlsx', '.xls', '.csv'))]
+    tab = ('.xlsx', '.xls', '.csv')
+    out = [('event table', FILE_WORDS['events'], tab),
+           ('varve counts', FILE_WORDS['varves'], tab),
+           ('carbon results', FILE_WORDS['carbon'], tab)]
     for core in CORE_IDS:
-        out.append((f'{core} XRF', FILE_WORDS[core]['xrf'], ('.xlsx', '.xls', '.csv')))
+        out.append((f'{core} XRF', FILE_WORDS[core]['xrf'], tab))
+        out.append((f'{core} grain size', FILE_WORDS[core]['gs'], tab))
         out.append((f'{core} photo', PHOTOS[core]['words'], PHOTO_EXT))
     return out
 
 
-def ensure_files():
-    """Stop early, with a clear message, if a photo depth or a file is missing."""
+def check_settings():
     for core, p in PHOTOS.items():
         if p.get('first_cm') is None or p.get('last_cm') is None:
             raise ValueError(f'Fill in first_cm and last_cm for {core} in PHOTOS '
@@ -191,11 +231,20 @@ def ensure_files():
             raise ValueError(f'{core}: photo across must be two fractions 0 <= a < b <= 1')
         if p.get('rotate', 'auto') not in ('auto', 'none', 'left_top', 'right_top'):
             raise ValueError(f'{core}: photo rotate must be auto, none, left_top or right_top')
+    bad = [m for m in JOIN_MODES if m not in ('continuous', 'gaps')]
+    if bad:
+        raise ValueError(f'JOIN_MODES may hold only "continuous" and "gaps", not {bad}')
+
+
+def ensure_files():
+    """Stop early, with a clear message, if a setting or a file is missing."""
+    check_settings()
     if all(find_file(w, e) for _, w, e in needed()):
         return
     try:
         from google.colab import files
-        print('Upload: 2 XRF (.xlsx), the event table, the varve counts, 2 core photos')
+        print('Upload: 2 XRF (.xlsx), 2 grain size (.csv), the carbon results, '
+              'the event table, the varve counts, 2 core photos')
         for name, data in files.upload().items():
             with open(os.path.join(DATA_DIR, name), 'wb') as fh:
                 fh.write(data)
@@ -209,6 +258,14 @@ def ensure_files():
 def read_table(path, **kw):
     return pd.read_excel(path, **kw) if path.lower().endswith(('.xlsx', '.xls')) \
         else pd.read_csv(path, encoding='utf-8-sig', **kw)
+
+
+def interval_depth(text):
+    """Depth of a sample from its name: the centre of the sampled interval.
+       '15.5 - 16cm' -> 15.75 ; '16.5-17.0cm-G2' -> 16.75 ; '13.0cm' -> 13.0
+       '15.5-16' (carbon file, after the core name) -> 15.75"""
+    numbers = re.findall(r'\d+(?:\.\d+)?', str(text).split('cm')[0])[:2]
+    return float(np.mean([float(n) for n in numbers])) if numbers else np.nan
 
 
 # =============================================================================
@@ -299,7 +356,64 @@ def read_xrf(path):
 
 
 # =============================================================================
-# STEP 4 - CORE PHOTO
+# STEP 4 - GRAIN SIZE
+# =============================================================================
+def read_grain_size(path):
+    df = read_table(path)
+    for c in (GS_SAMPLE_COL, GS_MEAN_COL):
+        if c not in df.columns:
+            raise KeyError(f'{os.path.basename(path)} has no column "{c}"')
+    d = pd.DataFrame({'depth': df[GS_SAMPLE_COL].map(interval_depth),
+                      'phi': pd.to_numeric(df[GS_MEAN_COL], errors='coerce')}).dropna()
+    return d.groupby('depth', as_index=False).mean()    # repeat runs -> mean
+
+
+# =============================================================================
+# STEP 5 - CARBON AND NITROGEN
+# =============================================================================
+def read_carbon(path, core_id):
+    """Your results sheet has one block per measurement, each with its own
+    sample column ('Sample ID' | 'Name' | 'Sample' | 'Sample'). Each value is
+    matched to the sample name in the nearest sample column to its LEFT, so the
+    blocks may be in different row orders. Returns a DataFrame with depth and
+    one column per CARBON_PANELS key, or None if the core has no samples."""
+    raw = read_table(path, header=None)
+    hdr = [str(v).strip() for v in raw.iloc[0]]
+    body = raw.iloc[1:]
+    sample_cols = [i for i, h in enumerate(hdr) if h in CARBON_SAMPLE_COLS]
+    if not sample_cols:
+        raise KeyError(f'{os.path.basename(path)}: no sample column {CARBON_SAMPLE_COLS}')
+    series = {}
+    for key, col, _, _ in CARBON_PANELS:
+        if col is None:
+            continue
+        if col not in hdr:
+            raise KeyError(f'{os.path.basename(path)} has no column "{col}"')
+        i = hdr.index(col)
+        left = [s for s in sample_cols if s < i]
+        if not left:
+            raise KeyError(f'"{col}" has no sample column to its left')
+        names = body.iloc[:, left[-1]].astype(str).str.strip()
+        vals = pd.to_numeric(body.iloc[:, i], errors='coerce')
+        keep = names.str.startswith(core_id + ' ')
+        s = pd.Series(vals[keep].values, index=names[keep].values, name=key)
+        if s.index.duplicated().any():
+            raise ValueError(f'"{col}": the same sample appears twice: '
+                             f'{s.index[s.index.duplicated()].tolist()}')
+        series[key] = s
+    df = pd.DataFrame(series)
+    if df.empty:
+        return None
+    df.insert(0, 'depth', [interval_depth(n[len(core_id):]) for n in df.index])
+    if 'TOC' in df and 'N' in df:
+        df['CN'] = (df.TOC / C_ATOM) / (df.N / N_ATOM)          # atomic C/N
+    if df.depth.isna().any():
+        raise ValueError(f'No depth in sample names {df.index[df.depth.isna()].tolist()}')
+    return df.sort_values('depth').reset_index(drop=True)
+
+
+# =============================================================================
+# STEP 6 - CORE PHOTO
 # =============================================================================
 def read_photo(path, rotate='auto', across=(0.0, 1.0)):
     """The photo as an RGB array with depth running DOWN its rows.
@@ -359,7 +473,7 @@ def save_photo_check(core, full, photo_depths, across, depth_range):
 
 
 # =============================================================================
-# STEP 5 - DRAWING
+# STEP 7 - DRAWING
 # =============================================================================
 def in_range(depth, top, bottom):
     return (depth >= top - 1e-9) & (depth <= bottom + 1e-9)
@@ -370,27 +484,55 @@ def darker(color, f=0.72):
     return (r * f, g * f, b * f)
 
 
-def layout(with_events, depth_top, depth_bottom):
-    """Figure size and panel positions in cm. Every width and the depth scale
-    are fixed numbers, so they are identical in both cores."""
-    n = len(CLR_ELEMENTS)
-    plot_h = (depth_bottom - depth_top) * DEPTH_SCALE
-    photo_x = LEFT_CM
-    lefts = [photo_x + PHOTO_W_CM + PANEL_GAP_CM + i * (PANEL_W_CM + PANEL_GAP_CM)
+def panel_list(has_carbon):
+    """Every data panel, left to right: key, data set, column, label, colour,
+    group, reversed axis."""
+    panels = [dict(key='phi', data='gs', col='phi', label='Mean grain\nsize (φ)',
+                   color=GS_COLOR, group='Grain size', reverse=True)]
+    for group, els in CLR_GROUPS:
+        for el in els:
+            panels.append(dict(key=f'{el}_clr', data='xrf', col=f'{el}_clr',
+                               label=f'{el}\n(clr)', color=ELEMENT_COLORS[el],
+                               group=group))
+    if has_carbon:
+        for key, _, label, color in CARBON_PANELS:
+            panels.append(dict(key=key, data='carbon', col=key, label=label,
+                               color=color, group='Carbon and nitrogen'))
+    return panels
+
+
+def panel_points(df, col, top, bottom):
+    """The samples of one panel inside the depth axis, without empty values,
+    in depth order (each panel drops only its own empty values)."""
+    d = df.loc[in_range(df.depth, top, bottom), ['depth', col]].dropna()
+    return d.sort_values('depth')
+
+
+def runs(depth, value, mode):
+    """'continuous': one run. 'gaps': split where the spacing is more than
+    GAP_FACTOR x the usual (median) spacing."""
+    depth, value = np.asarray(depth, float), np.asarray(value, float)
+    if mode == 'continuous' or len(depth) < 3:
+        return [(depth, value)]
+    step = np.median(np.diff(depth))
+    cut = np.where(np.diff(depth) > GAP_FACTOR * step)[0] + 1
+    return list(zip(np.split(depth, cut), np.split(value, cut)))
+
+
+def draw_core(core, data, photo, photo_depths, ev, panels, xlims, depth_range,
+              with_events, mode):
+    top, bottom = depth_range
+    n = len(panels)
+    plot_h = (bottom - top) * DEPTH_SCALE
+    lefts = [LEFT_CM + PHOTO_W_CM + PANEL_GAP_CM + i * (PANEL_W_CM + PANEL_GAP_CM)
              for i in range(n)]
     fig_w = lefts[-1] + PANEL_W_CM + (LABEL_W_CM if with_events else 1.0)
     fig_h = TOP_CM + plot_h + BOTTOM_CM
-    return fig_w, fig_h, plot_h, photo_x, lefts
-
-
-def draw_core(core, xrf, photo, photo_depths, ev, xlims, depth_range, with_events):
-    top, bottom = depth_range
-    fig_w, fig_h, plot_h, photo_x, lefts = layout(with_events, top, bottom)
     fig = plt.figure(figsize=(fig_w * CM, fig_h * CM))
     frac = lambda x, y, w, h: [x / fig_w, y / fig_h, w / fig_w, h / fig_h]
 
-    # ---- core photo: placed by the depths of its top and bottom edge -------
-    pax = fig.add_axes(frac(photo_x, BOTTOM_CM, PHOTO_W_CM, plot_h))
+    # ---- core photo: placed by its ruler depths ----------------------------
+    pax = fig.add_axes(frac(LEFT_CM, BOTTOM_CM, PHOTO_W_CM, plot_h))
     pax.imshow(photo, extent=[0, 1, photo_depths[1], photo_depths[0]],
                aspect='auto', interpolation='lanczos')
     pax.set_ylim(bottom, top)                       # depth increases downwards
@@ -403,10 +545,8 @@ def draw_core(core, xrf, photo, photo_depths, ev, xlims, depth_range, with_event
     pax.yaxis.set_minor_locator(MultipleLocator(DEPTH_MINOR_CM))
     pax.set_ylabel('Depth (cm)', labelpad=10)
 
-    # every XRF sample inside the core's depth range, as ONE continuous line
-    d = xrf[in_range(xrf.depth, top, bottom)]
     axes = []
-    for i, el in enumerate(CLR_ELEMENTS):
+    for i, p in enumerate(panels):
         ax = fig.add_axes(frac(lefts[i], BOTTOM_CM, PANEL_W_CM, plot_h), sharey=pax)
         axes.append(ax)
         if with_events:
@@ -415,19 +555,21 @@ def draw_core(core, xrf, photo, photo_depths, ev, xlims, depth_range, with_event
                            alpha=BAND_ALPHA, lw=0, zorder=0)
             for y in sorted(set(np.round(np.r_[ev.top, ev.base], 3))):
                 ax.axhline(y, color='0.3', lw=1.2, ls=(0, (5, 3)), zorder=1)
-        # one continuous line with a dot at every sample (5 mm XRF step)
-        ax.plot(d[f'{el}_clr'], d.depth, '-', color=ELEMENT_COLORS[el], lw=LINE_W,
-                marker='o', ms=DOT_SIZE, mfc=ELEMENT_COLORS[el], mec='white',
-                mew=0.6, zorder=3, gid='data')
+        d = panel_points(data[p['data']], p['col'], top, bottom)
+        for dd, vv in runs(d.depth, d[p['col']], mode):
+            ax.plot(vv, dd, '-', color=p['color'], lw=LINE_W, marker='o',
+                    ms=DOT_SIZE, mfc=p['color'], mec='white', mew=0.6,
+                    zorder=3, gid='data')
 
-        lo, hi = xlims[el]                          # same range in both cores
-        pad = 0.08 * (hi - lo)
-        ax.set_xlim(lo - pad, hi + pad)
-        ax.xaxis.set_major_locator(MaxNLocator(3, steps=[1, 2, 2.5, 5, 10]))
+        lo, hi = xlims[p['key']]                    # same range in both cores
+        pad = 0.08 * (hi - lo) if hi > lo else 1.0
+        lo, hi = lo - pad, hi + pad
+        ax.set_xlim((hi, lo) if p.get('reverse') else (lo, hi))
+        ax.xaxis.set_major_locator(MaxNLocator(3, steps=[1, 2, 5, 10]))
         ax.xaxis.set_minor_locator(AutoMinorLocator(2))
         ax.xaxis.tick_top()
         ax.xaxis.set_label_position('top')
-        ax.set_xlabel(f'{el}\n(clr)', labelpad=12, fontweight='bold')
+        ax.set_xlabel(p['label'], labelpad=12, fontweight='bold')
         ax.spines[['bottom', 'right', 'left']].set_visible(False)
         ax.tick_params(axis='y', which='both', left=False, labelleft=False)
 
@@ -435,12 +577,15 @@ def draw_core(core, xrf, photo, photo_depths, ev, xlims, depth_range, with_event
     fig.canvas.draw()
     label_tops = max(a.xaxis.label.get_window_extent().y1 for a in axes + [pax])
     y_line = label_tops / fig.dpi / CM + 0.6
-    k = 0
-    for name, els in CLR_GROUPS:
-        group_axes = axes[k:k + len(els)]
-        k += len(els)
-        x0 = group_axes[0].get_position().x0 + 0.002
-        x1 = group_axes[-1].get_position().x1 - 0.002
+    groups = []
+    for ax, p in zip(axes, panels):
+        if groups and groups[-1][0] == p['group']:
+            groups[-1][1].append(ax)
+        else:
+            groups.append((p['group'], [ax]))
+    for name, axs in groups:
+        x0 = axs[0].get_position().x0 + 0.002
+        x1 = axs[-1].get_position().x1 - 0.002
         fig.add_artist(plt.Line2D([x0, x1], [y_line / fig_h] * 2, color='k', lw=2,
                                   transform=fig.transFigure))
         fig.text((x0 + x1) / 2, (y_line + 0.3) / fig_h, name, ha='center',
@@ -475,9 +620,10 @@ def draw_core(core, xrf, photo, photo_depths, ev, xlims, depth_range, with_event
 
 
 # =============================================================================
-# STEP 6 - CHECK THE DRAWN FIGURE AGAINST THE DATA (stops on any error)
+# STEP 8 - CHECK THE DRAWN FIGURE AGAINST THE DATA (stops on any error)
 # =============================================================================
-def check_figure(core, fig, pax, axes, xrf, photo_depths, ev, depth_range, with_events):
+def check_figure(core, fig, pax, axes, panels, data, photo_depths, ev,
+                 depth_range, with_events, mode):
     problems = []
     top, bottom = depth_range
     for t in fig.findobj(matplotlib.text.Text):
@@ -492,26 +638,50 @@ def check_figure(core, fig, pax, axes, xrf, photo_depths, ev, depth_range, with_
     ext = img.get_extent()                           # [left, right, bottom, top]
     if (ext[3], ext[2]) != tuple(photo_depths):
         problems.append(f'photo placed at {ext[3]}-{ext[2]} cm, not {photo_depths}')
-    want = xrf[in_range(xrf.depth, top, bottom)]
-    for ax, el in zip(axes, CLR_ELEMENTS):
-        pos = ax.get_position()
-        if abs(pos.width * fig_w - PANEL_W_CM) > 1e-6:
-            problems.append(f'{el}: panel width {pos.width * fig_w:.3f} cm')
-        scale = pos.height * fig_h / (bottom - top)
-        if abs(scale - DEPTH_SCALE) > 1e-6:
-            problems.append(f'{el}: depth scale {scale:.4f}')
-        lines = [l for l in ax.get_lines() if l.get_gid() == 'data']
-        # exactly one line, holding every sample in depth order (continuous)
-        if len(lines) != 1:
-            problems.append(f'{el}: {len(lines)} data lines, expected 1 continuous line')
-            continue
-        if lines[0].get_marker() != 'o':
-            problems.append(f'{el}: samples are not drawn as dots')
-        got = np.c_[lines[0].get_ydata(), lines[0].get_xdata()].astype(float)
-        if not np.allclose(got, want[['depth', f'{el}_clr']].to_numpy(float), atol=1e-12):
-            problems.append(f'{el}: drawn line differs from the data')
     if tuple(pax.get_ylim()) != (bottom, top):
         problems.append(f'depth axis {pax.get_ylim()} != varve range {depth_range}')
+    counts = []
+    for ax, p in zip(axes, panels):
+        name = p['key']
+        pos = ax.get_position()
+        if abs(pos.width * fig_w - PANEL_W_CM) > 1e-6:
+            problems.append(f'{name}: panel width {pos.width * fig_w:.3f} cm')
+        if abs(pos.height * fig_h / (bottom - top) - DEPTH_SCALE) > 1e-6:
+            problems.append(f'{name}: depth scale')
+        want = panel_points(data[p['data']], p['col'], top, bottom)
+        lines = [l for l in ax.get_lines() if l.get_gid() == 'data']
+        if any(l.get_marker() != 'o' for l in lines):
+            problems.append(f'{name}: samples are not drawn as dots')
+        if mode == 'continuous' and len(want) and len(lines) != 1:
+            problems.append(f'{name}: {len(lines)} lines, expected 1 continuous line')
+        got = np.concatenate([np.c_[l.get_ydata(), l.get_xdata()] for l in lines]) \
+            if lines else np.empty((0, 2))
+        same_count = len(got) == len(want)
+        same_values = same_count and np.allclose(got.astype(float),
+                                                  want.to_numpy(float), atol=1e-12)
+        if not same_values:
+            problems.append(f'{name}: drawn points differ from the data')
+        if mode == 'gaps' and len(want) >= 3:
+            step = np.median(np.diff(want.depth))
+            for l in lines:
+                if len(l.get_ydata()) > 1 and np.diff(l.get_ydata()).max() > GAP_FACTOR * step + 1e-9:
+                    problems.append(f'{name}: a line crosses a gap in the samples')
+                    break
+        counts.append(len(want))
+    # tick numbers of neighbouring panels must stay MIN_LABEL_GAP_CM apart
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    def shown(ax):
+        lo, hi = sorted(ax.get_xlim())
+        return [t.get_window_extent(renderer) for t, v in
+                zip(ax.get_xticklabels(), ax.get_xticks())
+                if t.get_text() and lo - 1e-9 <= v <= hi + 1e-9]
+    for (a1, p1), (a2, p2) in zip(zip(axes, panels), zip(axes[1:], panels[1:])):
+        b1, b2 = shown(a1), shown(a2)
+        min_gap_px = MIN_LABEL_GAP_CM * CM * fig.dpi
+        if b1 and b2 and min(b.x0 for b in b2) - max(b.x1 for b in b1) < min_gap_px:
+            problems.append(f'tick numbers of {p1["key"]} and {p2["key"]} are '
+                            f'less than {MIN_LABEL_GAP_CM} cm apart')
     if with_events:
         labels = {t.get_gid() for t in fig.findobj(matplotlib.text.Text) if t.get_gid()}
         missing = [f'E{e}' for e in ev.event if f'E{e}' not in labels]
@@ -519,10 +689,11 @@ def check_figure(core, fig, pax, axes, xrf, photo_depths, ev, depth_range, with_
             problems.append(f'no label for {missing}')
     if problems:
         raise AssertionError(f'{core}: ' + '; '.join(problems))
-    print(f'   CHECK PASSED: {len(want)} XRF samples in one continuous line per '
-          f'element, photo at {photo_depths[0]:g}-{photo_depths[1]:g} cm, all text '
-          f'{FONT_PT} pt, panels {PANEL_W_CM} cm, depth scale {DEPTH_SCALE} cm/cm'
-          + (f', {len(ev)} events labelled' if with_events else ''))
+    summary = ', '.join(f'{p["key"]} {c}' for p, c in zip(panels, counts)
+                        if p['data'] != 'xrf')
+    print(f'   CHECK PASSED ({mode}{", events" if with_events else ""}): every point '
+          f'matches the data (XRF {counts[1]} per element; {summary}), all text '
+          f'{FONT_PT} pt, panels {PANEL_W_CM} cm, depth scale {DEPTH_SCALE} cm/cm')
 
 
 def _in_notebook():
@@ -540,56 +711,70 @@ def main():
     ensure_files()
     events = read_events(find_file(FILE_WORDS['events']))           # STEP 1
     varve_path = find_file(FILE_WORDS['varves'])
+    carbon_path = find_file(FILE_WORDS['carbon'])
+    os.makedirs(OUT_DIR, exist_ok=True)
 
     cores = {}
     for core in CORE_IDS:
         xp = find_file(FILE_WORDS[core]['xrf'])
+        gp = find_file(FILE_WORDS[core]['gs'])
         pp = find_file(PHOTOS[core]['words'], PHOTO_EXT)
         rng = read_core_range(varve_path, CORE_IDS[core])           # STEP 2
+        print(f'\n{core}\n   XRF        : {os.path.basename(xp)}'
+              f'\n   grain size : {os.path.basename(gp)}')
         xrf = read_xrf(xp)                                          # STEP 3
+        gs = read_grain_size(gp)                                    # STEP 4
+        carbon = read_carbon(carbon_path, CORE_IDS[core])           # STEP 5
         ph = PHOTOS[core]
         photo, full, done = read_photo(pp, ph.get('rotate', 'auto'),
-                                       ph.get('across', (0.0, 1.0)))  # STEP 4
+                                       ph.get('across', (0.0, 1.0)))  # STEP 6
         pdep = (float(ph['first_cm']), float(ph['last_cm']))
-        n_in = int(in_range(xrf.depth, *rng).sum())
-        print(f'\n{core}\n   XRF   : {os.path.basename(xp)}'
-              f'\n   photo : {os.path.basename(pp)} ({photo.shape[1]} x {photo.shape[0]} px),'
-              f' placed at {pdep[0]:g}-{pdep[1]:g} cm; {done}'
-              f'\n   depth axis : {rng[0]:g}-{rng[1]:g} cm (varve file); '
-              f'{n_in} of {len(xrf)} XRF samples fall inside it')
+        print(f'   photo      : {os.path.basename(pp)} ({photo.shape[1]} x '
+              f'{photo.shape[0]} px), placed at {pdep[0]:g}-{pdep[1]:g} cm; {done}'
+              f'\n   depth axis : {rng[0]:g}-{rng[1]:g} cm (varve file)'
+              f'\n   XRF        : {int(in_range(xrf.depth, *rng).sum())} samples, step '
+              f'{np.median(np.diff(xrf.depth)) * 10:g} mm'
+              f'\n   grain size : {int(in_range(gs.depth, *rng).sum())} samples')
+        if carbon is None:
+            print(f'   carbon     : no {CORE_IDS[core]} samples in '
+                  f'{os.path.basename(carbon_path)} -> no carbon panels')
+        else:
+            n = {k: int(carbon[k].notna().sum()) for k, *_ in CARBON_PANELS}
+            print(f'   carbon     : {len(carbon)} samples from '
+                  f'{os.path.basename(carbon_path)}; values per panel {n}')
         if pdep[0] > rng[0] or pdep[1] < rng[1]:
             print(f'   ! the photo ({pdep[0]:g}-{pdep[1]:g} cm) does not cover the '
                   f'whole depth axis ({rng[0]:g}-{rng[1]:g} cm): that part stays blank')
-        step = np.median(np.diff(xrf.depth))
-        print(f'   XRF step   : {step * 10:g} mm (median spacing of the samples)')
-        os.makedirs(OUT_DIR, exist_ok=True)
         chk = save_photo_check(core, full, pdep, ph.get('across', (0.0, 1.0)), rng)
         print(f'   photo check: {os.path.basename(chk)} (red lines must sit on the '
               f'ruler\'s 10 cm marks)')
-        cores[core] = dict(xrf=xrf, photo=photo, pdep=pdep, ev=events[core], rng=rng)
+        cores[core] = dict(data=dict(xrf=xrf, gs=gs, carbon=carbon), photo=photo,
+                           pdep=pdep, ev=events[core], rng=rng)
 
-    # one x range per element, shared by both cores
+    # one x range per panel, shared by every core that has that panel
     xlims = {}
-    for el in CLR_ELEMENTS:
-        v = pd.concat([c['xrf'].loc[in_range(c['xrf'].depth, *c['rng']), f'{el}_clr']
-                       for c in cores.values()])
-        xlims[el] = (v.min(), v.max())
+    for p in panel_list(True):
+        v = pd.concat([panel_points(c['data'][p['data']], p['col'], *c['rng'])[p['col']]
+                       for c in cores.values() if c['data'][p['data']] is not None])
+        xlims[p['key']] = (v.min(), v.max())
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    for with_events, tag in ((True, 'photo_clr_events'), (False, 'photo_clr_lines')):
-        for core, c in cores.items():
-            fig, pax, axes = draw_core(core, c['xrf'], c['photo'], c['pdep'], c['ev'],
-                                       xlims, c['rng'], with_events)        # STEP 5
-            check_figure(core, fig, pax, axes, c['xrf'], c['pdep'], c['ev'],
-                         c['rng'], with_events)                            # STEP 6
-            name = f'{core}_{tag}'
-            for ext in ('png', 'pdf'):
-                fig.savefig(os.path.join(OUT_DIR, f'{name}.{ext}'), dpi=DPI)
-            w, h = fig.get_size_inches() / CM
-            print(f'   saved {name}.png / .pdf  ({w:.1f} x {h:.1f} cm)')
-            if _in_notebook():
-                plt.show()
-            plt.close(fig)
+    for mode in JOIN_MODES:
+        for with_events, bg in ((True, 'events'), (False, 'lines')):
+            for core, c in cores.items():
+                panels = panel_list(c['data']['carbon'] is not None)
+                fig, pax, axes = draw_core(core, c['data'], c['photo'], c['pdep'],
+                                           c['ev'], panels, xlims, c['rng'],
+                                           with_events, mode)               # STEP 7
+                check_figure(core, fig, pax, axes, panels, c['data'], c['pdep'],
+                             c['ev'], c['rng'], with_events, mode)          # STEP 8
+                name = f'{core}_V7_{mode}_{bg}'
+                for ext in ('png', 'pdf'):
+                    fig.savefig(os.path.join(OUT_DIR, f'{name}.{ext}'), dpi=DPI)
+                w, h = fig.get_size_inches() / CM
+                print(f'   saved {name}.png / .pdf  ({w:.1f} x {h:.1f} cm)')
+                if _in_notebook():
+                    plt.show()
+                plt.close(fig)
     print(f'\nAll figures are in {OUT_DIR}')
 
 
